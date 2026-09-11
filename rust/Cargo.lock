@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "milky-cli"
+version = "0.1.0"
+dependencies = [
+ "milky-core",
+]
+
+[[package]]
 name = "milky-core"
 version = "0.1.0"
 

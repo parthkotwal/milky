@@ -97,3 +97,62 @@ Personalized ranking is a core long-term capability, and useful interaction data
 Consequences:
 
 The event schema should be designed before the first real dogfooding period.
+
+---
+
+## 2026-09-11 — Match quality is an ordered kind, not a score
+
+Decision:
+
+`matching::MatchKind` is an enum ordered weakest to strongest — `Subsequence`,
+`Substring`, `Acronym`, `WordPrefix`, `Prefix`, `Exact` — and `match_kind`
+returns the strongest that applies. Ranking sorts by kind, then by name length,
+then alphabetically.
+
+Why:
+
+Assigning numbers to match quality invites invented precision: nobody can say
+whether a prefix match is worth 0.8 or 0.75. An ordered enum states only what was
+actually observed. It is also totally ordered, so sorting is exact and avoids
+float comparison entirely.
+
+The length tie-break exists because ties are common — every result for a
+one-character query is a prefix match — and an arbitrary order makes results
+jitter between keystrokes, which is a correctness problem, not a cosmetic one.
+
+Consequences:
+
+This ladder cannot distinguish candidates of the same kind by anything other
+than name. Ranking `Chess` above `Calendar` for `c` is impossible here and needs
+a usage signal. When that arrives, kind becomes one feature among several and
+this enum turns into an input to scoring rather than the ranking itself.
+
+Acronym matching uses `word_initials(name).starts_with(query)`, so a query may
+cover the leading words rather than all of them. Splitting on whitespace only
+means `ColorSync` yields one initial, not two; camelCase boundaries are a known
+gap.
+
+---
+
+## 2026-09-11 — Scan installed apps once and hold them
+
+Decision:
+
+`Engine` scans for app bundles at construction and keeps the result. `search`
+takes `&self`; `reindex` takes `&mut self` and replaces the list.
+
+Why:
+
+A full scan measures ~1.6 ms. A keystroke budget is one 16 ms frame shared with
+every other source, ranking, and drawing, so re-scanning per query is out.
+
+`&self` on `search` means concurrent queries remain possible without redesign;
+`&mut self` there would serialize every search behind an exclusive borrow. When
+something inside eventually needs to mutate, the answer is interior mutability,
+not changing this signature.
+
+Consequences:
+
+The index goes stale until `reindex` is called. A filesystem watcher is the
+eventual trigger.
+

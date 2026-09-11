@@ -6,13 +6,42 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 ## Now
 
-- [ ] Define repository structure for Swift app, Rust core, and Python ML workspace.
+- [x] Define repository structure for Swift app, Rust core, and Python ML workspace.
+      `rust/` workspace with `milky-core`, `milky-ffi`, `milky-cli`; `apps/macos`
+      SwiftPM package.
+- [x] Decide Swift ↔ Rust integration approach. Rust `staticlib` linked into the
+      app, unmangled `extern "C"` symbols, hand-written header wrapped by a
+      SwiftPM `systemLibrary` target. Proven by `milky-probe`; only
+      `milky_abi_version` crosses so far.
+- [ ] Carry strings and an engine handle across the FFI boundary (Claude's).
 - [ ] Decide Swift ↔ Rust integration approach.
 - [ ] Define the common candidate/result/action data model.
 - [ ] Install full Xcode. Needed for `swift test` (XCTest ships with Xcode, not
       with the Command Line Tools) and for a real `.app` bundle.
 - [ ] Define the query and selection event schema.
-- [ ] Choose the first lexical retrieval implementation.
+- [ ] Choose the first lexical retrieval implementation. App-name matching is a
+      linear scan over 128 bundles at ~30-90 us, which is fine at this size and
+      will not be for files.
+- [ ] Record selections so ranking can use usage. Nothing distinguishes ten
+      equally-good prefix matches today.
+- [ ] Usage is three separate features, not one number. Keep them separate so
+      each can be weighted and debugged independently:
+      1. invocation frecency — decayed launch count, in `usage.rs`;
+      2. currently running — one OS query; 5 of 128 indexed apps on this
+         machine, so it is high-precision. Read it via `NSWorkspace` on the
+         Swift side and pass it into the engine as input, the way `now` is
+         passed in. Launch count alone undercounts apps left open for days.
+      3. focus time — foreground duration per app. The best signal and the
+         most expensive: needs a resident observer on
+         `NSWorkspace.didActivateApplicationNotification`. Note open is not
+         used: 45 bundles run on this machine while about three are in use.
+- [ ] A running app's action is "switch to", not "launch". Affects the result
+      model, not just ranking.
+- [ ] Results need a subtitle: three Python installs each ship `IDLE.app`, so
+      the list shows the same word three times.
+- [ ] camelCase word boundaries: `ColorSync` should yield initials `c` and `s`.
+- [ ] Unicode: `to_lowercase` is not case folding and ignores accents, so `cafe`
+      will not match `café`.
 - [ ] Benchmark candidate local text embedding models.
 - [ ] Benchmark candidate local image embedding models.
 - [ ] Decide local model inference runtime.

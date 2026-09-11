@@ -1,6 +1,9 @@
 //! Milky's search engine core.
 
 pub mod apps;
+pub mod matching;
+pub mod search;
+pub mod engine;
 
 /// Normalize a raw query for retrieval.
 ///

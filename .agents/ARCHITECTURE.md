@@ -42,6 +42,16 @@ Milky Core Service
 
 A separate Python workspace is used for model experiments, offline evaluation, training, and export. Python should not be required for normal launcher runtime unless we later have a strong reason.
 
+## Built so far
+
+`milky-core` holds the engine: `normalize_query`, app bundle discovery under
+`/Applications`, `/System/Applications`, `~/Applications` and one level of
+subdirectories, a `MatchKind` ladder, and an `Engine` that scans once and
+answers queries. `milky-cli` (`milky`) drives it headlessly, including an
+interactive mode against one warm engine. `milky-ffi` exposes
+`milky_abi_version` only. Measured: ~1.6 ms to index 128 apps, ~30-90 us per
+query.
+
 ## Runtime components
 
 ### macOS client
