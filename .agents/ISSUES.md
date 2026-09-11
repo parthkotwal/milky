@@ -103,3 +103,50 @@ Lesson:
 
 Noise on stderr is not failure. Check the exit code and whether the answer
 actually came back before debugging.
+
+---
+
+## 2026-09-11 — App display names are not in the bundle, and not in Info.plist
+
+Status: open
+Area: rust-core
+
+Symptom:
+
+Deriving an app's name from its bundle directory gave `FindMy` for what macOS
+displays as `Find My`. Reading `Info.plist` instead does not fix it, and breaks
+other apps:
+
+```text
+bundle directory            Info.plist    Foundation (correct)
+FindMy.app                  FindMy        Find My
+Visual Studio Code.app      Code          Visual Studio Code
+WhatsApp.app                <U+200E>WhatsApp    WhatsApp
+```
+
+Cause:
+
+The user-visible name comes from macOS's localization layer, not from a field in
+the bundle. `FindMy.app/Contents/Resources/en.lproj` is empty — system apps ship
+with resources stripped — so the string "Find My" is not in the bundle at all.
+It is reachable through Spotlight metadata (`kMDItemDisplayName`) or Foundation
+(`FileManager.displayName(atPath:)`), both of which were correct for all three.
+
+Fix / workaround:
+
+Still using the bundle directory name. Wrong for a small number of apps, but
+dependency-free and correct for the large majority.
+
+The real options, undecided: call CoreFoundation from Rust via the
+`core-foundation` crate, or have the Swift layer supply display names. The second
+puts a data source on the UI side of a boundary meant to keep the UI thin, so it
+interacts with where the indexer eventually lives. Decide when app search quality
+actually suffers.
+
+Lesson:
+
+Do not assume macOS metadata lives in the file you would expect. Check against
+what Finder shows (`mdls -name kMDItemDisplayName <path>`) before trusting a
+field. This was caught only because a test printed real names from the machine —
+worth keeping tests that touch the real filesystem for exactly this reason.
+

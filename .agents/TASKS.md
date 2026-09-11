@@ -22,7 +22,10 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 ## Soon
 
-- [ ] App discovery and launching.
+- [ ] App discovery and launching. Bundle scanning works; display names are still
+      the bundle directory name, which is wrong for some apps (see `ISSUES.md`).
+- [ ] Decide how to get correct localized app display names: `core-foundation`
+      from Rust, or supplied by Swift.
 - [ ] File/folder indexing.
 - [ ] Document text extraction.
 - [ ] Screenshot OCR.
