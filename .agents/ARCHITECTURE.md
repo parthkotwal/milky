@@ -1,0 +1,278 @@
+# Architecture
+
+## Product
+
+A fully local macOS search and action engine intended to become a better personal replacement for Spotlight.
+
+The system combines:
+
+- native launcher behavior;
+- heterogeneous local search;
+- semantic and multimodal retrieval;
+- personalized ranking;
+- direct actions;
+- background indexing;
+- local-only ML inference.
+
+## High-level design
+
+```text
+macOS UI
+  Swift / SwiftUI / AppKit
+        |
+        v
+Milky Core Service
+  Rust
+        |
+        +--> Query understanding
+        +--> Candidate generation
+        |      - apps/actions
+        |      - lexical search
+        |      - semantic text search
+        |      - image search
+        |
+        +--> Feature computation
+        +--> Unified ranking
+        +--> Action execution interface
+        |
+        +--> Metadata/history store
+        +--> Search indexes
+        +--> Local model runtime
+```
+
+A separate Python workspace is used for model experiments, offline evaluation, training, and export. Python should not be required for normal launcher runtime unless we later have a strong reason.
+
+## Runtime components
+
+### macOS client
+
+Responsibilities:
+
+- global launcher shortcut;
+- query input;
+- result list;
+- previews;
+- keyboard navigation;
+- action menus;
+- native macOS integrations.
+
+The UI should stay thin. Search and ranking logic belongs in the core service.
+
+### Rust core
+
+Responsibilities:
+
+- query processing;
+- candidate generation;
+- lexical retrieval;
+- semantic retrieval;
+- image retrieval;
+- feature generation;
+- ranking;
+- metadata access;
+- filesystem event processing;
+- indexing queues;
+- caches;
+- communication with local model runtimes;
+- performance-sensitive work.
+
+The exact IPC boundary between Swift and Rust is not decided yet.
+
+### Background indexer
+
+The indexer should eventually:
+
+- discover searchable sources;
+- extract metadata;
+- extract supported document text;
+- generate embeddings;
+- watch filesystem changes;
+- update indexes incrementally;
+- remove stale entries;
+- schedule expensive work without hurting foreground latency.
+
+### Python ML workspace
+
+Used for:
+
+- evaluating embedding models;
+- ranking experiments;
+- offline metrics;
+- training learned rankers;
+- personalization experiments;
+- model conversion/export;
+- benchmark notebooks/scripts.
+
+Runtime models should be exported into a format appropriate for efficient local inference.
+
+## Search pipeline
+
+Target shape:
+
+```text
+query
+  |
+  v
+query normalization / intent features
+  |
+  +------------------------------+
+  |              |               |
+  v              v               v
+structured     lexical        semantic
+sources        retrieval      retrieval
+(apps,         (files/text)   (text/images)
+actions)
+  |              |               |
+  +--------------+---------------+
+                 |
+                 v
+          candidate merge
+                 |
+                 v
+          feature computation
+                 |
+                 v
+          personalized ranker
+                 |
+                 v
+             results
+                 |
+                 v
+              actions
+```
+
+Easy queries should take a cheap path. Expensive models should only run when they add value.
+
+## Initial searchable sources
+
+V1 target:
+
+- installed applications;
+- files and folders;
+- supported document contents;
+- screenshots and images;
+- macOS settings and system actions;
+- web-search fallback.
+
+Later:
+
+- browser history;
+- notes;
+- clipboard history;
+- cloud files;
+- contacts;
+- other personal sources where local access is appropriate.
+
+## Ranking
+
+Initial ranking can combine explicit features such as:
+
+- exact/prefix/fuzzy lexical match;
+- BM25-like score;
+- semantic similarity;
+- candidate type;
+- recency;
+- frequency;
+- prior query-to-selection behavior;
+- overall selection frequency;
+- current foreground application;
+- basic query intent.
+
+Selections and result impressions should be stored from the beginning so later learned ranking is possible.
+
+Likely evolution:
+
+1. hand-tuned scoring;
+2. offline learned ranker;
+3. query-specific personalization;
+4. contextual ranking;
+5. online/adaptive personalization where appropriate.
+
+## Multimodal search
+
+Screenshots and images are a first-class target.
+
+Initial representation may combine:
+
+- metadata;
+- OCR text;
+- image embeddings.
+
+Example intended queries:
+
+- `screenshot of the seiko watch`
+- `diagram with kafka boxes`
+- `restaurant menu photo`
+- `brown jacket screenshot`
+
+Model choice is intentionally undecided until benchmarking.
+
+## Storage
+
+Tentative split:
+
+- SQLite: metadata, usage history, configuration, durable structured state;
+- dedicated lexical index;
+- dedicated vector index;
+- local model files and caches.
+
+The project should not force all data through one storage abstraction.
+
+## Performance
+
+Foreground search should feel instantaneous.
+
+Important principles:
+
+- keep the search service warm;
+- return cheap high-confidence results early;
+- refine results progressively when useful;
+- cache common work;
+- incrementally update indexes;
+- benchmark before optimizing;
+- move hot paths lower in the stack only when measurements justify it.
+
+Potential future work includes:
+
+- memory-mapped indexes;
+- compact binary formats;
+- quantized embeddings;
+- SIMD;
+- custom ANN structures;
+- Metal / Apple Neural Engine acceleration;
+- specialized native inference.
+
+## Entity graph
+
+A graph is a likely later subsystem, not a V1 requirement.
+
+Purpose:
+
+- connect files, folders, projects, apps, URLs, courses, people, and other entities;
+- allow related objects to influence retrieval and ranking;
+- expose useful actions around a conceptual entity rather than only raw files.
+
+Possible future techniques include graph traversal, personalized PageRank-like features, graph embeddings, and learned relationship discovery.
+
+## Fully local constraint
+
+Core behavior must work without a network connection.
+
+User content, embeddings, query history, selections, and personalization stay on the device.
+
+This constraint is intentional and should influence model size, inference strategy, storage, caching, and indexing design.
+
+## Open architectural decisions
+
+Still to decide:
+
+- Swift ↔ Rust integration approach;
+- exact lexical index implementation;
+- exact vector index implementation;
+- local inference runtime;
+- initial text embedding model;
+- initial image embedding model;
+- document parsers and supported formats;
+- filesystem discovery/indexing policy;
+- ranking feature schema;
+- app/system-action source implementation.

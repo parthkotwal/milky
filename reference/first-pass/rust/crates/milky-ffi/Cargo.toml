@@ -1,0 +1,15 @@
+[package]
+name = "milky-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "milky_ffi"
+# staticlib: the engine is linked directly into the macOS app, so a query is a
+# function call rather than any kind of message passing.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+milky-core.workspace = true
