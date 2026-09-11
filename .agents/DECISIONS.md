@@ -156,3 +156,29 @@ Consequences:
 The index goes stale until `reindex` is called. A filesystem watcher is the
 eventual trigger.
 
+---
+
+## 2026-09-11 — Separate Swift agent guidance and memory
+
+Decision:
+
+Keep native design, working guidelines, tasks, decisions, issues, and integration
+notes in `.agents/swift/`. Root and macOS `AGENTS.md` entry points route agents
+to the shared instructions and the relevant Swift guidance.
+
+Why:
+
+The user wants Swift agents to develop the native experience and retain their
+own context without interfering with the core agent's learning and work records.
+
+Alternatives considered:
+
+Putting every UI detail in shared memory would mix independent work queues.
+Entirely separate instructions would risk divergent product and FFI decisions.
+
+Consequences:
+
+Swift-only work updates local records. Product-wide and cross-language changes
+remain coordinated and recorded here. The Swift integration file distinguishes
+verified behavior from proposals, allowing fixture-based UI work before the real
+search boundary is ready. No application behavior is implemented by this setup.

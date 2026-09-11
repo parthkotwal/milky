@@ -1,10 +1,14 @@
-# Issues
+# Tasks
 
-This is the persistent work log for unfinished problems, bugs, investigations, and next steps.
+This is the shared work queue. Bugs and lessons belong in ISSUES.md; native UI
+implementation details belong in `.agents/swift/TASKS.md`.
 
 Keep entries concise. Remove or move completed items when they no longer help future sessions.
 
 ## Now
+
+- [x] Prepare separate Swift agent guidance, design direction, and local records.
+      Native implementation work is tracked in `.agents/swift/TASKS.md`.
 
 - [x] Define repository structure for Swift app, Rust core, and Python ML workspace.
       `rust/` workspace with `milky-core`, `milky-ffi`, `milky-cli`; `apps/macos`
@@ -14,10 +18,9 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       SwiftPM `systemLibrary` target. Proven by `milky-probe`; only
       `milky_abi_version` crosses so far.
 - [ ] Carry strings and an engine handle across the FFI boundary (Claude's).
-- [ ] Decide Swift ↔ Rust integration approach.
 - [ ] Define the common candidate/result/action data model.
-- [ ] Install full Xcode. Needed for `swift test` (XCTest ships with Xcode, not
-      with the Command Line Tools) and for a real `.app` bundle.
+- [x] Install full Xcode. Resolved in ISSUES.md; verify the active developer
+      directory on a fresh machine.
 - [ ] Define the query and selection event schema.
 - [ ] Choose the first lexical retrieval implementation. App-name matching is a
       linear scan over 128 bundles at ~30-90 us, which is fine at this size and

@@ -86,7 +86,11 @@ Responsibilities:
 - communication with local model runtimes;
 - performance-sensitive work.
 
-The exact IPC boundary between Swift and Rust is not decided yet.
+The current integration uses an in-process Rust static library, a handwritten
+C header, and a SwiftPM system-library target. Only `milky_abi_version` crosses
+the boundary today. Engine handles, search results, memory ownership, and events
+still need an agreed API. Swift-side coordination lives in
+`.agents/swift/INTEGRATION.md`; cross-language decisions remain shared.
 
 ### Background indexer
 
@@ -276,7 +280,7 @@ This constraint is intentional and should influence model size, inference strate
 
 Still to decide:
 
-- Swift ↔ Rust integration approach;
+- Swift ↔ Rust engine/search/event API and ownership contract;
 - exact lexical index implementation;
 - exact vector index implementation;
 - local inference runtime;

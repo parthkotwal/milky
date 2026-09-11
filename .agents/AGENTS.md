@@ -53,6 +53,14 @@ For important learning moments, especially Rust, search/indexing logic, ranking,
 
 For boilerplate, frontend polish, repetitive integration code, generated bindings, basic configuration, and other low-learning-value work, it is fine to handle more of it directly.
 
+For Swift and the native macOS UI specifically, I care about appearance and
+interaction, not learning Swift or its implementation architecture. Agents
+should own that work end to end and make routine technical decisions without
+teaching detours or exercises. Discuss visual/interaction choices and meaningful
+product tradeoffs with me; explain Swift internals only when asked or needed to
+understand a concrete limitation or cross-language decision. Keep the learning-first
+approach for Rust, core systems, and the core side of the FFI boundary.
+
 Do not repeatedly stop to ask whether you may proceed. Make reasonable decisions and keep moving. Ask only when a decision meaningfully changes the product or architecture and cannot be inferred from existing project context.
 
 ## Engineering goals
@@ -142,6 +150,13 @@ After meaningful work:
 - update `.agents/ARCHITECTURE.md` when the actual system changes.
 
 Do not turn these files into diaries. Record information future sessions will genuinely need.
+
+Swift/native UI work also follows `apps/macos/AGENTS.md` and the guidance in
+`.agents/swift/`. Keep Swift-only design, decisions, tasks, issues, and integration
+notes there rather than duplicating them in shared records. The shared files
+remain authoritative for product direction and core/cross-language architecture.
+Coordinate cross-language changes with the core owner and record their agreement
+in the shared decisions; a Swift-local proposal does not change the contract.
 
 If implementation and documentation disagree, call it out and fix the documentation.
 
