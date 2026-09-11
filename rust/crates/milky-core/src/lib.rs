@@ -1,5 +1,7 @@
 //! Milky's search engine core.
 
+pub mod apps;
+
 /// Normalize a raw query for retrieval.
 ///
 /// Lowercases, trims surrounding whitespace, and collapses internal runs of

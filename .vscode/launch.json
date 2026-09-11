@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:milky}/apps/macos",
+            "name": "Debug milky-probe (apps/macos)",
+            "target": "milky-probe",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug milky-probe (apps/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:milky}/apps/macos",
+            "name": "Release milky-probe (apps/macos)",
+            "target": "milky-probe",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release milky-probe (apps/macos)"
+        }
+    ]
+}

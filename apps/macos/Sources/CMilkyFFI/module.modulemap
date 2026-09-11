@@ -1,0 +1,7 @@
+// Makes the hand-written C header importable from Swift as `import CMilkyFFI`,
+// and tells the linker to pull in libmilky_ffi.a.
+module CMilkyFFI {
+    header "include/milky.h"
+    link "milky_ffi"
+    export *
+}

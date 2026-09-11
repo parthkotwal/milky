@@ -1,0 +1,10 @@
+[package]
+name = "milky-ffi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lib]
+crate-type = ["staticlib", "rlib"]

@@ -37,28 +37,69 @@ entry just because it is resolved: resolved entries are the point.
 
 ## 2026-09-10 — No full Xcode on the dev machine, so no XCTest
 
-Status: open
+Status: resolved
 Area: tooling
 
 Symptom:
 
-`xcodebuild` fails with "requires Xcode, but active developer directory
-'/Library/Developer/CommandLineTools' is a command line tools instance". In
-Swift packages, `import XCTest` fails with "no such module 'XCTest'", and
-swift-testing is missing too — only its macro plugin is present.
+`xcodebuild` failed with "requires Xcode, but active developer directory
+'/Library/Developer/CommandLineTools' is a command line tools instance". In Swift
+packages, `import XCTest` failed with "no such module 'XCTest'", and
+swift-testing was missing too — only its macro plugin was present.
 
 Cause:
 
-Only the Command Line Tools are installed. Both test frameworks ship inside
+Only the Command Line Tools were installed. Both test frameworks ship inside
 Xcode, as does `xcodebuild`.
 
 Fix / workaround:
 
-Rust was installed via rustup (1.98.1) and is fine. On the Swift side, until
-Xcode is installed, assertions have to live in a plain executable target rather
-than a `testTarget`.
+Xcode installed; `xcode-select -p` now points at
+`/Applications/Xcode.app/Contents/Developer`. XCTest and `swift test` are
+available, so Swift-side assertions can live in a real `testTarget`.
 
 Lesson:
 
-Do not assume `xcodebuild` or XCTest exist. Prefer SwiftPM-buildable targets for
-anything that should run in a script or in CI.
+Both test frameworks come from Xcode, not from the Swift toolchain. On a fresh
+machine, check `xcode-select -p` before assuming `swift test` will work.
+
+---
+
+## 2026-09-10 — `nm` floods stderr with "Unknown attribute kind" on Rust archives
+
+Status: worked around
+Area: tooling
+
+Symptom:
+
+`nm target/debug/libmilky_ffi.a` prints many lines of
+
+```text
+Unknown attribute kind (102) (Producer: 'LLVM22.1.8-rust-1.98.1-stable'
+Reader: 'LLVM APPLE_1_1700.6.3.2_0')
+```
+
+plus `no symbols` for many archive members. Easy to mistake for a build failure.
+
+Cause:
+
+Rust embeds LLVM bitcode in its object files, and Rust's LLVM is newer than the
+one Apple's `nm` is built from, so the bitcode reader does not recognise newer
+attribute kinds. It is a complaint about the embedded bitcode, not about the
+Mach-O symbol table. `no symbols` is normal for members with no global symbols.
+
+Fix / workaround:
+
+Symbols are still reported correctly. Send stderr to `/dev/null`:
+
+```bash
+nm -gU target/debug/libmilky_ffi.a 2>/dev/null | grep abi_version
+```
+
+For clean output instead, `rustup component add llvm-tools` provides an
+`llvm-nm` built from the same LLVM as the compiler.
+
+Lesson:
+
+Noise on stderr is not failure. Check the exit code and whether the answer
+actually came back before debugging.
