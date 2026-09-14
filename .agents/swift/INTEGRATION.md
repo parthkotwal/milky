@@ -1,6 +1,6 @@
 # Swift / Rust coordination
 
-## Verified baseline — 2026-09-11
+## Historical fixture baseline — 2026-09-11
 
 - `apps/macos/Package.swift` uses Swift tools 6.0 and targets macOS 14+.
 - SwiftPM's `CMilkyFFI` system-library target wraps a handwritten C header.
@@ -24,23 +24,7 @@ Agree on a boundary change before either side depends on it. Record agreed
 cross-language ownership and ABI decisions in the shared DECISIONS.md, then link
 them here. Do not invent C signatures or modify the header alone.
 
-## Next contract to agree — proposal, not implemented
-
-The first integration needs:
-
-1. Engine construction and destruction, including initialization failure.
-2. Search with query and result limit, returning ordered results with stable
-   identity/path and display name. Match kind is optional presentation/debug data.
-3. Explicit string encoding, allocation ownership, result lifetime, and freeing.
-4. Error behavior and supported threading: who may call the engine, on which
-   executor, and whether calls may overlap. Define shutdown with work in flight.
-5. A subsequent local impression/selection event contract: distinguish selection,
-   action attempt, and action success; coordinate persistence with the core owner.
-
-Do not mark events as persisted until the real path exists. The current usage
-store is not an event log and does not establish a cross-language event schema.
-
-## Independent Swift progress
+## Adapter and fixture rules
 
 Use a small Swift search-provider abstraction with fixture and real adapters.
 Fixture results may contain stable IDs, display names, and app URLs; they are
@@ -53,15 +37,17 @@ Never declare a handle Sendable merely to silence concurrency errors.
 
 ## Agreed contract — 2026-09-13
 
-Rust side implemented 2026-09-13 at ABI version 2; Swift adapter not yet
-connected. Verified from outside Swift: a C program linked against
+Rust side implemented 2026-09-13 at ABI version 2; Swift adapter connected
+2026-09-13 in `Sources/MilkyRust/RustSearchProvider.swift`. Verified from outside Swift: a C program linked against
 `libmilky_ffi.a` made 1000 requests with correct results, and `leaks` reported
 0 leaks. The header in `Sources/CMilkyFFI/include/milky.h` matches the exports.
 
-**Build warning:** SwiftPM does not relink when only the Rust archive changes.
+**Build warning:** Bare SwiftPM does not relink when only the Rust archive changes.
 `milky-probe` kept printing ABI 1 after Rust moved to 2 until its binary was
-deleted and rebuilt. See shared `../ISSUES.md` 2026-09-13; the durable fix is a
-Swift build-setup task. Keep the runtime `milky_abi_version()` check.
+deleted and rebuilt. `scripts/build.sh` now builds Rust, fingerprints the archive,
+and cleans Swift products when its contents change. `scripts/run.sh` uses this
+path. Bare `swift build/run/test` bypasses the protection; use the scripts after
+Rust edits. The runtime version check remains in the adapter.
 
 Authoritative text: shared
 [`../DECISIONS.md`](../DECISIONS.md), entry "Swift ↔ Rust boundary:
@@ -88,3 +74,28 @@ learning-first). Swift adapter and linking — Swift owner.
 
 - Impression/selection event messages: not designed. They will be new `op`
   values in the same envelope, not new C functions.
+
+
+## Verified Swift adapter — 2026-09-13
+
+- Real Rust search is the default. Only `--fixtures` selects development data;
+  engine failures show errors with Retry and never trigger fixture fallback.
+- `RustSearchProvider` holds its engine in an actor, prepares off the UI thread,
+  serializes its own short synchronous calls, and skips cancelled queued work.
+  The contract permits concurrency; this adapter does not require it. Existing
+  presentation generations still discard obsolete responses.
+- Every foreign response is copied into Data, freed with `defer`, then decoded.
+  Order and display names come directly from Rust; path is stable identity.
+  Relative/NUL-containing paths, duplicate IDs, mismatched query echoes, unknown
+  reply kinds, and invalid JSON fail visibly rather than becoming zero results.
+- App termination cancels presentation work and awaits actor shutdown before
+  replying to AppKit's termination request. Engine destruction cannot overlap
+  its synchronous request. A shut-down provider cannot recreate an engine.
+- Native launcher links the same Rust archive even in fixture mode, so the
+  fixture launch wrapper now also builds Rust (without calling it for searches).
+- Verified real Visual Studio Code and three IDLE results in the running app,
+  real no-match response, and Enter launching Calculator. 12 Swift tests pass,
+  including actual ABI/engine requests, post-free result lifetime, concurrent
+  callers, escaped input, wire errors, unsupported versions, and shutdown.
+- No usage event messages or persistence were added. App discovery is still the
+  Rust engine's startup snapshot; restart Milky to pick up installed/removed apps.

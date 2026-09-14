@@ -150,6 +150,24 @@ private actor ControlledSearch: SearchProvider {
         XCTAssertFalse(state.isSearching)
     }
 
+    func testStartupFailureCanRetryWithoutTypingAndCannotOverwriteAnActiveQuery() async throws {
+        let provider = ControlledSearch()
+        let state = LauncherState(provider: provider, opener: RecordingOpener())
+        state.showProviderError(FixtureError.unavailable)
+        XCTAssertNotNil(state.errorMessage)
+        state.refresh()
+        try await waitFor { await provider.contains("") }
+        await provider.succeed("", [])
+        try await waitFor { !state.isSearching }
+        XCTAssertNil(state.errorMessage)
+        state.setQuery("new")
+        state.showProviderError(FixtureError.unavailable)
+        XCTAssertNil(state.errorMessage)
+        try await waitFor { await provider.contains("new") }
+        await provider.succeed("new", [first])
+        try await waitFor { !state.isSearching }
+    }
+
     func testDismissalInvalidatesPendingWorkAndReinvocationResets() async throws {
         let provider = ControlledSearch()
         let state = LauncherState(provider: provider, opener: RecordingOpener())

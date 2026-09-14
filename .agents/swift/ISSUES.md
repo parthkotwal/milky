@@ -72,3 +72,16 @@ Fix / workaround: Keep physical repeated shortcut/focus testing outstanding;
 registration success and automated key injection alone are not proof.
 Validation: Enter successfully dismissed the panel and opened Calculator. Global
 invocation/focus-return acceptance remains unchecked.
+
+## 2026-09-13 — Stale Rust archive handling in native builds
+Status: worked around
+Area: build
+Symptom: Core owner observed SwiftPM retaining ABI 1 after rebuilding ABI 2.
+Cause: External archive changes do not invalidate SwiftPM's linked products.
+Fix / workaround: Canonical build/run scripts fingerprint the archive and clean
+Swift products on content changes. Absolute search paths work from any cwd.
+Lesson: Use `scripts/build.sh` or `scripts/run.sh` after Rust edits; raw SwiftPM
+commands bypass this invalidation. Keep runtime ABI validation as a second check.
+Validation: First fingerprint-miss build cleaned and rebuilt all products; probe
+reports ABI 2, real Swift bridge tests pass, unchanged fingerprint reuses products.
+Shared root cause remains recorded in `../ISSUES.md` (2026-09-13).

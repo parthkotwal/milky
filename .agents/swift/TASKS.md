@@ -4,7 +4,7 @@
 
 Invoke Milky, type a query, navigate real app results, and open or activate the
 selected application. This is the native foundation for the broader product.
-Swift can progress with fixtures while the user and core agent build the FFI.
+Real Rust app search is connected. Explicit fixtures remain available for UI QA.
 
 ## Now
 
@@ -15,8 +15,8 @@ Swift can progress with fixtures while the user and core agent build the FFI.
       native open/activate actions. Choose a configurable shortcut without
       modifying the user's system shortcuts. Implementation landed; physical
       shortcut/focus testing and the remaining QA below are still outstanding.
-- [ ] Coordinate the minimal search boundary described in INTEGRATION.md with
-      the core owner, then connect the real adapter when available.
+- [x] Connect the agreed ABI 2 search boundary through the real Swift adapter.
+- [x] Build Rust before Swift and invalidate stale static linkage in the dev scripts.
 
 Completion requires a built, running native app; repeated shortcut invocation;
 responsive typing; real Rust results; duplicate-name disambiguation; correct
@@ -40,31 +40,54 @@ Keep this queue short. Put implementation findings in ISSUES.md and durable
 choices in DECISIONS.md. Do not duplicate the shared engine backlog here.
 
 
-## Run the fixture slice
+## Run and verify
 
 From the repository root:
+
+```sh
+apps/macos/scripts/run.sh
+apps/macos/scripts/build.sh test
+```
+
+`run.sh` builds Rust and Swift, assembles `.build/Milky.app`, and opens the real
+launcher. Quit an already-running Milky before relaunching; the script refuses
+to leave an old process running against a replaced binary. `build.sh` checks the
+Rust archive fingerprint and cleans Swift build products when it changes. Use
+these entry points after Rust edits; bare SwiftPM commands can retain stale Rust.
+
+Control–Option–Space is the default shortcut;
+`--shortcut=command-shift-space` selects the alternate. The menu bar item offers
+Show/Quit; Command-Q quits an active panel. `--appearance=light` or `dark` applies
+only to this panel. Omitting appearance flags follows macOS.
+
+For explicit development fixtures:
 
 ```sh
 apps/macos/scripts/run-fixtures.sh
 ```
 
-This builds the native product without Rust, wraps it in an ignored development
-`.app` under `apps/macos/.build/`, and opens with `--fixtures`. Alternatively:
+This wraps `run.sh --fixtures` and now also builds the linked Rust archive.
+Inputs: name substrings, `all`, `slow`, `error`, `zzzz`, `IDLE`, `Unavailable`.
+Real mode does not treat those words as fixture commands. Enter opens real app
+URLs in either mode. No usage is saved yet.
 
-```sh
-swift run --package-path apps/macos milky-launcher --fixtures
-```
+## QA evidence — 2026-09-13
 
-Use Control–Option–Space, or launch with
-`--shortcut=command-shift-space`. The menu bar magnifying-glass item offers Show
-and Quit; Command-Q quits while Milky is active. Quit the running copy before
-rebuilding/relaunching with different flags. `--appearance=light` and
-`--appearance=dark` override only this panel for QA. Omit them to follow macOS.
-
-Fixture inputs: ordinary name substrings, `all` (entire corpus), `slow` (1.2 s
-delayed corpus), `error` (search failure), `zzzz` (no matches), `IDLE` (duplicate
-names), `Unavailable` (missing-app action failure). Enter opens actual installed
-apps at the explicit fixture URLs; missing paths fail visibly. No usage is saved.
+- 12 XCTest cases pass through the canonical build script, including five bridge
+  tests against the linked library/wire decoder and seven presentation/icon tests.
+- Probe reports ABI 2. First script run invalidated old Swift products; subsequent
+  unchanged archive reused them. Archive-content changes trigger the same clean
+  path. Swift sources and Rust/header signatures remain independently owned.
+- Actual app inspected in dark and light modes with Rust results. `visual studio`
+  returns Visual Studio Code; `idle` shows three separate Python installations;
+  `zzqqxxnomatch` shows no matches. Native app icons and paths are correct.
+- Enter on Rust's Calculator result opened Calculator (absent from running-app
+  inventory before the action, running afterward). Command-Q completed orderly
+  termination; relaunch used the latest build. CUA may reopen a hidden app while
+  inspecting it, so do not infer exact focus-return behavior from its snapshots.
+- Physical repeated shortcut, focus return, multi-display/Spaces, VoiceOver, and
+  the remaining accessibility checks below are still open. This integration
+  does not mark the overall native milestone complete.
 
 ## QA evidence — 2026-09-11
 
@@ -92,5 +115,5 @@ apps at the explicit fixture URLs; missing paths fail visibly. No usage is saved
   shortcuts. Do not treat those timeouts as proof of the shortcut acceptance
   criteria; see ISSUES.md.
 
-The current milestone remains open until the agreed Rust adapter returns real
-results and native invocation/action acceptance is verified end to end.
+The current milestone remains open for native invocation/action acceptance;
+the real Rust adapter requirement is now met.

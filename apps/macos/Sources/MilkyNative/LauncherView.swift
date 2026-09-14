@@ -14,9 +14,11 @@ private enum Theme {
 public struct LauncherView: View {
     @Bindable var state: LauncherState
     let dismiss: () -> Void
+    let fixtures: Bool
 
-    public init(state: LauncherState, dismiss: @escaping () -> Void) {
+    public init(state: LauncherState, fixtures: Bool = true, dismiss: @escaping () -> Void) {
         self.state = state
+        self.fixtures = fixtures
         self.dismiss = dismiss
     }
 
@@ -50,8 +52,12 @@ public struct LauncherView: View {
             }
             Divider()
             HStack(spacing: 14) {
-                Label("Fixtures", systemImage: "testtube.2")
-                    .help("Development fixtures only. No Rust search or usage recording.")
+                if fixtures {
+                    Label("Fixtures", systemImage: "testtube.2")
+                        .help("Development fixtures only. No Rust search or usage recording.")
+                } else {
+                    Label("Applications", systemImage: "app")
+                }
                 Spacer()
                 Text("↑↓ Navigate")
                 Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : Theme.secondary)
@@ -71,7 +77,7 @@ public struct LauncherView: View {
                 Image(systemName: state.errorMessage != nil ? "exclamationmark.magnifyingglass" : "app.dashed")
                     .font(.system(size: 30)).foregroundStyle(Theme.secondary)
                 Text(emptyTitle).font(.system(size: 16, weight: .medium))
-                Text(state.query.isEmpty ? "Try Safari, Calendar, or IDLE. Type all to inspect every fixture." :
+                Text(state.query.isEmpty && state.errorMessage == nil ? (fixtures ? "Try Safari, Calendar, or IDLE. Type all to inspect every fixture." : "Type an application name to get started.") :
                         state.isSearching ? "" : state.errorMessage != nil ? "Change your query or retry below." : "Try another application name.")
                     .font(Theme.subtitle).foregroundStyle(Theme.secondary)
             }.padding(24)
@@ -98,7 +104,8 @@ public struct LauncherView: View {
     }
 
     private var emptyTitle: String {
-        if state.query.isEmpty { return "Search fixture applications" }
+        if state.errorMessage != nil && state.results.isEmpty { return "Search unavailable" }
+        if state.query.isEmpty { return fixtures ? "Search fixture applications" : "Search applications" }
         if state.isSearching { return state.showsProgress ? "Searching…" : "" }
         if state.errorMessage != nil { return "Search unavailable" }
         return "No matching applications"

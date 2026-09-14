@@ -1,6 +1,6 @@
 # Milky native design direction
 
-Status: implemented fixture-panel direction; real-engine integration is pending.
+Status: implemented native panel with real Rust app search and explicit fixture mode.
 Adapted from the user's supplied frontend-design guidance for a native macOS
 launcher. These defaults can be refined through real visual and interaction QA.
 
@@ -103,3 +103,11 @@ a restrained accent fill, a leading stripe, and a Return glyph. Paths truncate
 in the middle; full names and paths remain in accessibility labels and tooltips.
 A persistent Fixtures footer discloses development mode. Empty-query helper
 text describes explicit fixture inputs rather than invented usage suggestions.
+
+
+## Real search mode — 2026-09-13
+
+Normal launch uses an Applications footer and a neutral empty-query prompt.
+Only explicit fixture mode shows the Fixtures label and development examples.
+Layout and keyboard interaction are shared; real order/names come from Rust.
+Startup/ABI/response failures remain visible errors with Retry, never demo data.

@@ -93,3 +93,40 @@ wastes memory for 32 pt icons.
 Consequences: No wallpaper-dependent material or motion in this first panel.
 Typography, selected stripe, and spacing carry the visual hierarchy. Cache size
 is suitable for the fixed fixture corpus; revisit eviction for real large sources.
+
+## 2026-09-13 — Connect the agreed JSON bridge and default to real search
+
+Decision: Implement the accepted shared 2026-09-13 ABI 2 contract in a separate
+`MilkyRust` target. The executable defaults to Rust; `--fixtures` remains explicit.
+This supersedes the fixture-only launch requirement from 2026-09-11. The C header
+and Rust exports are unchanged by the Swift integration.
+
+Why: The core owner has delivered the contract. An actor-owned handle provides
+simple off-main execution and safe shutdown without declaring pointers Sendable.
+These short synchronous searches serialize in the adapter even though Rust
+permits overlapping requests. Generation checks remain the stale-result guard.
+
+Consequences: Engine preparation happens off-main after showing the panel. On
+termination, AppKit waits for actor shutdown, which frees the handle only after
+its active request finishes. Copied Data outlives foreign memory. Decoding does
+not reorder, rename, or re-rank. Usage events remain a separate core agreement.
+
+## 2026-09-13 — Make the development scripts responsible for fresh static linkage
+
+Decision: `scripts/build.sh` builds Rust and compares the archive's SHA-256 to
+its last successful Swift build. A difference cleans Swift products before
+building/testing. `scripts/run.sh` invokes that build and packages the app;
+`run-fixtures.sh` is now a mode wrapper. Use absolute library paths in SwiftPM.
+
+Why: SwiftPM does not track a static library discovered through `-L` as an input.
+A changed Rust archive must invalidate previously linked Swift products. A
+content check avoids unnecessary clean builds when Cargo emits no changes.
+
+Alternatives: A build plugin could track Cargo inputs, but is more infrastructure
+than this package needs. Always cleaning would also work but slows UI iteration.
+
+Consequences: Canonical scripts prevent stale linkage; direct SwiftPM remains
+unsafe after Rust-only edits. Runtime ABI validation still rejects unsupported
+versions before creating an engine. Fixture runs now also require the Rust
+archive because both modes share one executable. Scripts refuse to overwrite a
+running app; Quit before relaunching with changed code or flags.

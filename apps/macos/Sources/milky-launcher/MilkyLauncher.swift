@@ -1,15 +1,12 @@
 import AppKit
 import Carbon
 import MilkyNative
+import MilkyRust
 import SwiftUI
 
 @main
 struct MilkyLauncher {
     @MainActor static func main() {
-        guard CommandLine.arguments.contains("--fixtures") else {
-            print("Native development launcher requires --fixtures. Rust search is not connected.\nUsage: swift run milky-launcher --fixtures [--shortcut=control-option-space|command-shift-space] [--appearance=light|dark]")
-            return
-        }
         let app = NSApplication.shared
         let delegate = LauncherDelegate()
         app.delegate = delegate
@@ -24,7 +21,12 @@ private final class LauncherPanel: NSPanel {
 
 @MainActor
 private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let state = LauncherState(provider: FixtureSearchProvider(), opener: NativeAppOpener())
+    private let fixtures = CommandLine.arguments.contains("--fixtures")
+    private let rust = RustSearchProvider()
+    private lazy var state = LauncherState(provider: fixtures ? FixtureSearchProvider() : rust, opener: NativeAppOpener())
+    private var preparation: Task<Void, Never>?
+    private var terminating = false
+    private var displayName: String { fixtures ? "Milky — Fixtures" : "Milky" }
     private var panel: LauncherPanel!
     private var statusItem: NSStatusItem!
     private var shortcut: GlobalShortcut?
@@ -35,7 +37,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         installMainMenu()
         panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 640, height: 554),
                               styleMask: [.borderless], backing: .buffered, defer: false)
-        panel.title = "Milky — Fixtures"
+        panel.title = displayName
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -45,7 +47,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LauncherView(state: state) { [weak self] in
+        panel.contentView = NSHostingView(rootView: LauncherView(state: state, fixtures: fixtures) { [weak self] in
             self?.dismiss(restoreFocus: true)
         })
         if CommandLine.arguments.contains("--appearance=light") { panel.appearance = NSAppearance(named: .aqua) }
@@ -53,9 +55,9 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         state.onOpened = { [weak self] in self?.dismiss(restoreFocus: false) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "magnifyingglass.circle", accessibilityDescription: "Milky Fixtures")
+        statusItem.button?.image = NSImage(systemSymbolName: "magnifyingglass.circle", accessibilityDescription: displayName)
         let menu = NSMenu()
-        let showItem = menu.addItem(withTitle: "Show Milky (Fixtures)", action: #selector(showFromMenu), keyEquivalent: "")
+        let showItem = menu.addItem(withTitle: "Show \(displayName)", action: #selector(showFromMenu), keyEquivalent: "")
         showItem.target = self
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "Quit Milky", action: #selector(quitApp), keyEquivalent: "q")
@@ -73,9 +75,15 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
             menu.insertItem(item, at: 1)
             fputs("Milky: global shortcut registration failed; use the menu bar item.\n", stderr)
         } else {
-            showItem.title = "Show Milky (Fixtures)  \(label)"
+            showItem.title = "Show \(displayName)  \(label)"
         }
         show()
+        if !fixtures {
+            preparation = Task { [weak self, rust] in
+                do { try await rust.prepare() }
+                catch { self?.state.showProviderError(error) }
+            }
+        }
     }
 
     private func installMainMenu() {
@@ -104,6 +112,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
     @objc private func quitApp() { NSApp.terminate(nil) }
 
     private func show() {
+        guard !terminating else { return }
         if !panel.isVisible {
             let front = NSWorkspace.shared.frontmostApplication
             if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { previousApp = front }
@@ -159,6 +168,19 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         show()
         return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminating else { return .terminateLater }
+        terminating = true
+        state.dismiss()
+        preparation?.cancel()
+        shortcut?.invalidate()
+        Task {
+            await rust.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

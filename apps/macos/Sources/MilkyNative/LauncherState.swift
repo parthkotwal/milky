@@ -39,9 +39,15 @@ public final class LauncherState {
         search(resetSelection: changed)
     }
 
-    public func refresh() { search(resetSelection: false) }
+    public func refresh() { search(resetSelection: false, allowEmpty: errorMessage != nil) }
 
-    private func search(resetSelection: Bool) {
+    public func showProviderError(_ error: any Error) {
+        // A startup failure must not overwrite a query already being handled.
+        guard active, query.isEmpty else { return }
+        errorMessage = error.localizedDescription
+    }
+
+    private func search(resetSelection: Bool, allowEmpty: Bool = false) {
         generation += 1
         let token = generation
         request?.cancel()
@@ -49,7 +55,7 @@ public final class LauncherState {
         errorMessage = nil
         showsProgress = false
         if resetSelection { results = []; selectedID = nil }
-        guard active, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard active, allowEmpty || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             results = []; selectedID = nil; isSearching = false
             return
         }
