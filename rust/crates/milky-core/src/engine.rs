@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::apps;
 use crate::normalize_query;
 use crate::search::{AppMatch, search_apps};
+use crate::api::{Request, Response, SearchResponse, ErrorResponse, ErrorReason, ENCODE_FAILURE, result_item};
 
 /// A warm search engine.
 ///
@@ -44,6 +45,32 @@ impl Engine {
     /// Takes `&mut self` because it replaces state no reader may be holding.
     pub fn reindex(&mut self) {
         self.apps = apps::discover();
+    }
+
+    /// Handle one serialized request and return a serialized response.
+    ///
+    /// Returns a `String`, not a `Result`: a malformed request is a normal
+    /// error *response*, so a caller across the C boundary has exactly one
+    /// thing to check rather than two failure channels.
+    pub fn handle_json(&self, request_json: &str) -> String {
+        let response = match serde_json::from_str::<Request>(request_json) {
+            Ok(Request::Search(req)) => {
+                let results = self
+                    .search(&req.query, req.limit)
+                    .iter()
+                    .filter_map(result_item)
+                    .collect();
+                Response::Search(SearchResponse {
+                    query: req.query,
+                    results,
+                })
+            }
+            Err(err) => Response::Error(ErrorResponse {
+                reason: ErrorReason::BadRequest,
+                message: format!("could not parse request: {err}"),
+            }),
+        };
+        serde_json::to_string(&response).unwrap_or_else(|_| ENCODE_FAILURE.to_string())
     }
 }
 
@@ -97,5 +124,64 @@ mod tests {
         let before = engine.app_count();
         engine.reindex();
         assert_eq!(engine.app_count(), before);
+    }
+
+        fn ask(engine: &Engine, request: &str) -> serde_json::Value {
+        serde_json::from_str(&engine.handle_json(request))
+            .expect("a response must always be valid JSON")
+    }
+
+    #[test]
+    fn search_round_trips_through_json() {
+        let engine = Engine::new();
+        let v = ask(&engine, r#"{"op":"search","query":"term","limit":5}"#);
+        assert_eq!(v["kind"], "search");
+        assert_eq!(v["query"], "term");
+        let results = v["results"].as_array().unwrap();
+        let terminal = results.iter().find(|r| r["name"] == "Terminal").expect("Terminal");
+        assert_eq!(terminal["match_kind"], "prefix");
+        assert_eq!(terminal["path"], "/System/Applications/Utilities/Terminal.app");
+    }
+
+    #[test]
+    fn no_matches_is_an_empty_search_not_an_error() {
+        let engine = Engine::new();
+        let v = ask(&engine, r#"{"op":"search","query":"zzqqxxnomatch","limit":5}"#);
+        assert_eq!(v["kind"], "search");
+        assert!(v["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn json_search_respects_the_limit() {
+        let engine = Engine::new();
+        let v = ask(&engine, r#"{"op":"search","query":"a","limit":2}"#);
+        assert!(v["results"].as_array().unwrap().len() <= 2);
+    }
+
+    #[test]
+    fn malformed_json_is_a_bad_request() {
+        let v = ask(&Engine::new(), "definitely not json");
+        assert_eq!(v["kind"], "error");
+        assert_eq!(v["reason"], "bad_request");
+    }
+
+    #[test]
+    fn unknown_op_is_a_bad_request() {
+        let v = ask(&Engine::new(), r#"{"op":"teleport"}"#);
+        assert_eq!(v["kind"], "error");
+        assert_eq!(v["reason"], "bad_request");
+    }
+
+    #[test]
+    fn missing_limit_is_a_bad_request() {
+        let v = ask(&Engine::new(), r#"{"op":"search","query":"term"}"#);
+        assert_eq!(v["kind"], "error");
+        assert_eq!(v["reason"], "bad_request");
+    }
+
+    #[test]
+    fn error_responses_carry_exactly_one_kind_key() {
+        let raw = Engine::new().handle_json("not json");
+        assert_eq!(raw.matches(r#""kind""#).count(), 1, "got {raw}");
     }
 }

@@ -48,8 +48,8 @@ A separate Python workspace is used for model experiments, offline evaluation, t
 `/Applications`, `/System/Applications`, `~/Applications` and one level of
 subdirectories, a `MatchKind` ladder, and an `Engine` that scans once and
 answers queries. `milky-cli` (`milky`) drives it headlessly, including an
-interactive mode against one warm engine. `milky-ffi` exposes
-`milky_abi_version` only. Measured: ~1.6 ms to index 128 apps, ~30-90 us per
+interactive mode against one warm engine. `milky-ffi` exposes the
+five-function ABI; `api.rs` holds the wire types. Measured: ~1.6 ms to index 128 apps, ~30-90 us per
 query.
 
 ## Runtime components
@@ -87,9 +87,11 @@ Responsibilities:
 - performance-sensitive work.
 
 The current integration uses an in-process Rust static library, a handwritten
-C header, and a SwiftPM system-library target. Only `milky_abi_version` crosses
-the boundary today. Engine handles, search results, memory ownership, and events
-still need an agreed API. Swift-side coordination lives in
+C header, and a SwiftPM system-library target. The engine/search contract (DECISIONS
+2026-09-13) is implemented on the Rust side at ABI version 2: five C functions,
+JSON request/response messages through `Engine::handle_json`, concurrent calls
+allowed. The Swift adapter is not connected yet. Events are future message
+types, not new functions. Swift-side coordination lives in
 `.agents/swift/INTEGRATION.md`; cross-language decisions remain shared.
 
 ### Background indexer
@@ -280,7 +282,7 @@ This constraint is intentional and should influence model size, inference strate
 
 Still to decide:
 
-- Swift ↔ Rust engine/search/event API and ownership contract;
+- Swift ↔ Rust event message schema (impressions, selections, action outcomes);
 - exact lexical index implementation;
 - exact vector index implementation;
 - local inference runtime;

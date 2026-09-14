@@ -182,3 +182,92 @@ Swift-only work updates local records. Product-wide and cross-language changes
 remain coordinated and recorded here. The Swift integration file distinguishes
 verified behavior from proposals, allowing fixture-based UI work before the real
 search boundary is ready. No application behavior is implemented by this setup.
+
+---
+
+## 2026-09-13 — Swift ↔ Rust boundary: message-based JSON over a five-function C ABI
+
+Status: accepted by the user (core owner's call, delegated). Rust side implemented
+2026-09-13; Swift adapter not yet connected.
+
+Decision:
+
+ABI version 2. The C surface is five functions and does not grow with features:
+
+```c
+typedef struct MilkyEngine MilkyEngine;              /* opaque */
+
+uint32_t     milky_abi_version(void);
+MilkyEngine *milky_engine_new(void);                  /* NULL on failure */
+void         milky_engine_free(MilkyEngine *engine);  /* NULL-safe */
+char        *milky_engine_request(const MilkyEngine *engine,
+                                  const char *request_json); /* owned, never NULL */
+void         milky_string_free(char *s);              /* NULL-safe */
+```
+
+Requests and responses are UTF-8 JSON. The schema is serde types in `milky-core`,
+mirrored by Codable types in Swift. The first message is search:
+
+```text
+request   {"op":"search","query":"term","limit":20}
+response  {"kind":"search","query":"term","results":[
+             {"path":"/System/Applications/Utilities/Terminal.app",
+              "name":"Terminal","match_kind":"prefix"}]}
+error     {"kind":"error","reason":"bad_request","message":"..."}
+          reason: bad_request | internal | panic
+```
+
+Why:
+
+The result model is undesigned and will grow: files, actions, subtitles, a
+"switch to" verb for running apps, score breakdowns. With `#[repr(C)]` structs,
+every field is a header change, an ABI bump, and a Swift adapter change,
+coordinated between two agents. A hand-written header that disagrees with Rust
+corrupts memory silently; a schema mismatch fails as a decode error. More
+operations are coming (selection events, reindex), and indexing may move out of
+process, where a message API carries over directly and a struct ABI does not.
+
+Measured cost, 20 results, release builds:
+
+| step | JSON | C structs |
+|---|---|---|
+| Rust encode | 1.2 us (serde_json) | 1.1 us (CString) |
+| Swift decode | 23.4 us (JSONDecoder) | 1.4 us (String(cString:)) |
+
+JSON marshaling is about 10x slower, roughly 25 us per keystroke, dominated by
+Swift's decoder. That is under 0.2% of a 16 ms keystroke budget and smaller than
+the search itself (30-90 us).
+
+Alternatives considered:
+
+- `#[repr(C)]` result arrays: fastest, but rigid, and the largest unsafe surface.
+- One JSON function per operation: a more descriptive header, but an ABI change
+  and agent coordination for every new operation.
+- A binary codec: faster, but dependencies on both sides, harder to debug, and
+  premature at this payload size.
+
+Revisit when: profiling shows decoding as a meaningful share of keystroke
+latency, or payloads grow by orders of magnitude. The swap is a deliberate ABI
+bump, not a gradual drift.
+
+Consequences — the contract:
+
+- Engine: `milky_engine_new` returns NULL on failure. `milky_engine_free` must
+  never run while a request is in flight; Swift frees only at termination.
+- Strings: the request is borrowed only for the duration of the call. The
+  response is owned by the caller, never NULL, freed exactly once with
+  `milky_string_free`, and does not depend on the engine staying alive.
+- Errors are distinguishable from empty results: `kind: "error"` versus
+  `kind: "search"` with `results: []`.
+- Threading: concurrent `milky_engine_request` calls on one engine from any
+  thread are allowed. `Engine` is `Send + Sync`; verified with 16 threads x 500
+  overlapping searches. Required because the launcher starts a new search per
+  keystroke without waiting for the previous synchronous call to return.
+- Panics: every entry point wraps its body in `catch_unwind` and returns an
+  error response, or NULL from `milky_engine_new`. Verified that a panic escaping
+  `extern "C"` aborts the whole process (SIGABRT, exit 134).
+- No cancellation in v1: a search costs 30-90 us, and Swift discards stale
+  responses by generation.
+- Match kind crosses as a snake_case string, never a number: `MatchKind`
+  declaration order is the ranking order and will change.
+- The header stays hand-written; Swift checks `milky_abi_version()` at startup.

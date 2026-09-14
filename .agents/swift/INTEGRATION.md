@@ -51,8 +51,40 @@ Keep mock mode explicit. Once the contract exists, convert results to Swift-owne
 values before releasing foreign memory, following the agreed ownership rules.
 Never declare a handle Sendable merely to silence concurrency errors.
 
+## Agreed contract — 2026-09-13
+
+Rust side implemented 2026-09-13 at ABI version 2; Swift adapter not yet
+connected. Verified from outside Swift: a C program linked against
+`libmilky_ffi.a` made 1000 requests with correct results, and `leaks` reported
+0 leaks. The header in `Sources/CMilkyFFI/include/milky.h` matches the exports.
+
+**Build warning:** SwiftPM does not relink when only the Rust archive changes.
+`milky-probe` kept printing ABI 1 after Rust moved to 2 until its binary was
+deleted and rebuilt. See shared `../ISSUES.md` 2026-09-13; the durable fix is a
+Swift build-setup task. Keep the runtime `milky_abi_version()` check.
+
+Authoritative text: shared
+[`../DECISIONS.md`](../DECISIONS.md), entry "Swift ↔ Rust boundary:
+message-based JSON over a five-function C ABI". Do not restate or fork it here.
+
+Swift-side summary for building the adapter:
+
+- Link `libmilky_ffi.a`; check `milky_abi_version() == 2` before creating an engine.
+- `milky_engine_new()` once; NULL means initialization failure. Free only at
+  termination, never while a request is in flight.
+- Per search: encode `{"op":"search","query":...,"limit":...}`, call
+  `milky_engine_request`, copy the returned bytes into Swift-owned `Data`, call
+  `milky_string_free` exactly once, then decode. Never keep the foreign pointer.
+- `kind: "error"` means failure (show error UI); `kind: "search"` with empty
+  `results` means no matches. Map `path` to `AppResult.id` and `url`, `name` to
+  `name`; `match_kind` is a string, debug/presentation only.
+- Calls may overlap on one engine from any thread. Keep generation checks; the
+  engine does not cancel.
+
+Owners: Rust exports and `milky.h` — core owner (the user writes the Rust side,
+learning-first). Swift adapter and linking — Swift owner.
+
 ## Pending coordination
 
-No search ABI has been agreed yet. Add concrete proposals here only when needed,
-with owner, status, and the unresolved question. Keep completed agreements as
-links to the shared decision rather than maintaining two competing specifications.
+- Impression/selection event messages: not designed. They will be new `op`
+  values in the same envelope, not new C functions.

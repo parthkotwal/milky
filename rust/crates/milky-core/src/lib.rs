@@ -5,6 +5,7 @@ pub mod matching;
 pub mod search;
 pub mod engine;
 pub mod usage;
+pub mod api;
 
 /// Normalize a raw query for retrieval.
 ///

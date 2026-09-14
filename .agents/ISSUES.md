@@ -150,3 +150,35 @@ what Finder shows (`mdls -name kMDItemDisplayName <path>`) before trusting a
 field. This was caught only because a test printed real names from the machine —
 worth keeping tests that touch the real filesystem for exactly this reason.
 
+---
+
+## 2026-09-13 — Swift binaries keep a stale Rust archive after Rust rebuilds
+
+Status: open
+Area: build
+
+Symptom:
+
+After the ABI version moved to 2 and `libmilky_ffi.a` was rebuilt, `swift build
+--product milky-probe` reported the build complete, yet `milky-probe` still
+printed `milky ABI version: 1`. A C program linked against the same archive
+returned 2.
+
+Cause:
+
+The archive is found through `-L` in `linkerSettings.unsafeFlags` plus
+`link "milky_ffi"` in the module map. SwiftPM does not treat that external
+archive as a build input, so it does not relink when only the Rust side changes.
+
+Fix / workaround:
+
+Force a relink by deleting the linked binary (or cleaning). Verified: after
+removing `milky-probe` and rebuilding, it printed 2. A durable fix belongs to the
+Swift build setup (Swift owner), such as a dev script that builds Rust and then
+forces a relink, or making the archive a tracked input.
+
+Lesson:
+
+"Build complete" does not mean Swift sees the latest Rust. Check
+`milky_abi_version()` at runtime; this check is what caught it.
+

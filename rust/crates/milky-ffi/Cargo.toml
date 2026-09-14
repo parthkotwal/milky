@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+milky-core = { path = "../milky-core" }
+
+[dev-dependencies]
+serde_json = "1"
 
 [lib]
 crate-type = ["staticlib", "rlib"]

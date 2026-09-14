@@ -17,7 +17,15 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       app, unmangled `extern "C"` symbols, hand-written header wrapped by a
       SwiftPM `systemLibrary` target. Proven by `milky-probe`; only
       `milky_abi_version` crosses so far.
-- [ ] Carry strings and an engine handle across the FFI boundary (Claude's).
+- [x] Implement the Rust side of the Swift ↔ Rust boundary (DECISIONS
+      2026-09-13): `api.rs` message types, `Engine::handle_json`, five
+      `milky-ffi` exports, header at ABI version 2. Verified: 75 Rust tests, a C
+      program making 1000 requests through the real archive, `leaks` 0 leaks.
+- [ ] Swift adapter against the contract (Swift owner).
+- [ ] Swift binaries keep a stale Rust archive after Rust rebuilds; see
+      ISSUES.md 2026-09-13. Needs a durable build fix (Swift owner).
+- [ ] Usage persistence (serde, `UsageError`, atomic save). Specced 2026-09-11,
+      not written. Next natural consumer: selection events from the launcher.
 - [ ] Define the common candidate/result/action data model.
 - [x] Install full Xcode. Resolved in ISSUES.md; verify the active developer
       directory on a fresh machine.
