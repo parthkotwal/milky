@@ -89,6 +89,8 @@ pub enum WireMatchKind {
     Acronym,
     Substring,
     Subsequence,
+    /// Only the destination's keywords matched, not its title.
+    Keyword,
 }
 
 #[derive(Debug, Serialize)]
@@ -207,7 +209,7 @@ pub fn result_item(hit: &Hit) -> Option<ResultItem> {
         title: hit.title.to_string(),
         subtitle: candidate.subtitle.clone(),
         action,
-        match_kind: hit.kind.into(),
+        match_kind: hit.kind.map_or(WireMatchKind::Keyword, WireMatchKind::from),
     })
 }
 
@@ -258,7 +260,14 @@ mod tests {
     }
 
     fn hit_for(candidate: &Candidate) -> Hit<'_> {
-        Hit { candidate, title: candidate.title(), kind: MatchKind::Exact, usage: 0.0 }
+        Hit {
+            candidate,
+            title: candidate.title(),
+            kind: Some(MatchKind::Exact),
+            keyword: None,
+            tier: crate::search::Tier::Exact,
+            usage: 0.0,
+        }
     }
 
     #[test]
@@ -316,6 +325,7 @@ mod tests {
             subtitle: String::new(),
             action: Action::Launch(path),
             names: vec![crate::candidate::Name::new("Broken")],
+            keywords: Vec::new(),
         };
         assert!(result_item(&hit_for(&candidate)).is_none());
     }

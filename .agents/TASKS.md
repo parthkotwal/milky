@@ -123,9 +123,10 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       Accessibility is 342 of 711 items, so keyword matches must not flood
       results; English only.
       Searchable since 2026-10-08 (contract v3): pane names and section titles.
-      Next: step 3, keyword matching and ranking ("camera" currently ranks
-      Accessibility's Camera Options above the privacy setting; "mac address"
-      only substring-matches), with dashes now folded (step 4 done).
+      Step 3 done 2026-10-08: keyword matching, multi-word queries, tiered
+      ranking with an app > pane > section prior, subsequence for apps only
+      (DECISIONS 2026-10-08). Remaining misses: `location`, `display`,
+      plurals (`hot corners`), `screen recording`.
 - [ ] System actions (sleep, lock, empty trash, etc.).
 - [ ] Web-search fallback.
 - [x] Usage-history persistence.

@@ -93,7 +93,7 @@ pub fn match_key(key: &NameKey, query: &str) -> Option<MatchKind> {
     if key.folded.starts_with(query) {
         return Some(MatchKind::Prefix);
     }
-    if key.words.iter().any(|word| word.starts_with(query)) {
+    if all_words_start(&key.words, query) {
         return Some(MatchKind::WordPrefix);
     }
     // Either reading of the initials counts, so camelCase splitting never
@@ -109,6 +109,47 @@ pub fn match_key(key: &NameKey, query: &str) -> Option<MatchKind> {
         return Some(MatchKind::Subsequence);
     }
     None
+}
+
+/// How a query matched an entry's keywords, weaker to stronger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum KeywordMatch {
+    /// Every query word starts some keyword, but at least one is unfinished:
+    /// `"camer"`.
+    Partial,
+    /// Every query word is a whole keyword: `"camera"`, `"mac address"`.
+    Complete,
+}
+
+/// How `query` matches a set of keyword words, or `None`.
+///
+/// `words` come from [`words_of`]; `query` must already be normalized by
+/// [`crate::normalize_query`]. Query words may match in any order.
+pub fn keyword_match(words: &[String], query: &str) -> Option<KeywordMatch> {
+    if query.is_empty() {
+        return None;
+    }
+    if query.split(' ').all(|part| words.iter().any(|word| word == part)) {
+        return Some(KeywordMatch::Complete);
+    }
+    if all_words_start(words, query) {
+        return Some(KeywordMatch::Partial);
+    }
+    None
+}
+
+/// Does every word of `query` start at least one of `words`?
+///
+/// `"mac addr"` against `["wifi", "mac", "address"]` is true, in any order.
+/// A one-word query asks whether any word starts with it.
+pub fn all_words_start(words: &[String], query: &str) -> bool {
+    query.split(' ').all(|part| words.iter().any(|word| word.starts_with(part)))
+}
+
+/// The folded words of `text`, as matching sees them, camelCase parts
+/// included: `"AirDrop"` -> `["air", "drop", "airdrop"]`.
+pub fn words_of(text: &str) -> Vec<String> {
+    NameKey::new(text).words
 }
 
 /// Is `needle` a subsequence of `haystack` — all its characters present, in
@@ -204,6 +245,45 @@ fn is_invisible_format(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_query_word_must_start_a_word() {
+        assert_eq!(match_kind("Wi-Fi MAC Address", "mac address"), Some(MatchKind::WordPrefix));
+        assert_eq!(match_kind("Wi-Fi MAC Address", "address mac"), Some(MatchKind::WordPrefix));
+        assert_eq!(match_kind("Wi-Fi MAC Address", "mac addr"), Some(MatchKind::WordPrefix));
+        assert_eq!(match_kind("Turn off display when inactive", "turn display"), Some(MatchKind::WordPrefix));
+        assert_ne!(match_kind("Wi-Fi MAC Address", "mac phone"), Some(MatchKind::WordPrefix));
+    }
+
+    #[test]
+    fn whole_keywords_are_complete_matches() {
+        let words: Vec<String> = ["MAC address", "Dark Mode"].iter().flat_map(|k| words_of(k)).collect();
+        assert_eq!(keyword_match(&words, "mac address"), Some(KeywordMatch::Complete));
+        assert_eq!(keyword_match(&words, "dark"), Some(KeywordMatch::Complete));
+        assert_eq!(keyword_match(&words, "mode dark"), Some(KeywordMatch::Complete));
+    }
+
+    #[test]
+    fn unfinished_keywords_are_partial_matches() {
+        let words = words_of("camera");
+        assert_eq!(keyword_match(&words, "camer"), Some(KeywordMatch::Partial));
+        assert!(KeywordMatch::Complete > KeywordMatch::Partial);
+    }
+
+    #[test]
+    fn every_query_word_must_be_a_keyword() {
+        let words: Vec<String> = ["camera", "privacy"].iter().flat_map(|k| words_of(k)).collect();
+        assert_eq!(keyword_match(&words, "camera microphone"), None);
+        assert_eq!(keyword_match(&words, "amera"), None, "keywords match from the start of a word");
+        assert_eq!(keyword_match(&words, ""), None);
+    }
+
+    #[test]
+    fn keyword_words_are_folded_and_split() {
+        assert_eq!(words_of("AirDrop"), vec!["air", "drop", "airdrop"]);
+        assert_eq!(words_of("Wi‑Fi"), vec!["wifi"]);
+        assert_eq!(keyword_match(&words_of("Wi‑Fi"), "wifi"), Some(KeywordMatch::Complete));
+    }
 
     #[test]
     fn exact_beats_everything() {

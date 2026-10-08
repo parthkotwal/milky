@@ -162,11 +162,11 @@ fn print_results(results: &[Hit<'_>], elapsed: std::time::Duration) {
 
     for (index, hit) in results.iter().enumerate() {
         println!(
-            "  {rank:>2}. {title:<width$}  {kind:<11}  {subtitle}",
+            "  {rank:>2}. {title:<width$}  {kind:<15}  {subtitle}",
             rank = index + 1,
             title = hit.title,
             width = widest,
-            kind = format!("{:?}", hit.kind),
+            kind = format!("{:?}", hit.tier),
             subtitle = hit.candidate.subtitle,
         );
     }

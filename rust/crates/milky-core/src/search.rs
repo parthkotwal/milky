@@ -2,24 +2,68 @@
 
 use std::cmp::Reverse;
 
-use crate::candidate::Candidate;
-use crate::matching::{MatchKind, match_key};
+use crate::candidate::{Candidate, Kind};
+use crate::matching::{KeywordMatch, MatchKind, keyword_match, match_key};
+
+/// How strong the evidence for a hit is, weakest to strongest; the first sort
+/// key. Title kinds and keyword matches interleave: a whole keyword is better
+/// evidence than initials, an unfinished one better than a substring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tier {
+    Subsequence,
+    Substring,
+    KeywordPartial,
+    Acronym,
+    KeywordComplete,
+    WordPrefix,
+    Prefix,
+    Exact,
+}
+
+/// The tier for a title match and a keyword match, or `None` if neither
+/// matched. A word in the title that Apple also lists as a keyword counts as
+/// much as the title starting with it.
+pub fn tier(kind: Option<MatchKind>, keyword: Option<KeywordMatch>) -> Option<Tier> {
+    if kind == Some(MatchKind::WordPrefix) && keyword == Some(KeywordMatch::Complete) {
+        return Some(Tier::Prefix);
+    }
+    let from_title = kind.map(|kind| match kind {
+        MatchKind::Subsequence => Tier::Subsequence,
+        MatchKind::Substring => Tier::Substring,
+        MatchKind::Acronym => Tier::Acronym,
+        MatchKind::WordPrefix => Tier::WordPrefix,
+        MatchKind::Prefix => Tier::Prefix,
+        MatchKind::Exact => Tier::Exact,
+    });
+    let from_keywords = keyword.map(|keyword| match keyword {
+        KeywordMatch::Partial => Tier::KeywordPartial,
+        KeywordMatch::Complete => Tier::KeywordComplete,
+    });
+    from_title.max(from_keywords)
+}
 
 /// One candidate that matched a query. Borrows from the candidate list
 /// instead of copying it, so a search allocates nothing per candidate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hit<'a> {
     pub candidate: &'a Candidate,
-    /// The name that matched best — shown as the result's title.
+    /// The name that matched best — shown as the result's title. The default
+    /// title when only keywords matched.
     pub title: &'a str,
-    pub kind: MatchKind,
+    /// How the title matched, if it did.
+    pub kind: Option<MatchKind>,
+    /// How the keywords matched, if they did.
+    pub keyword: Option<KeywordMatch>,
+    pub tier: Tier,
     pub usage: f64,
 }
 
 /// Candidates matching `query`, best first, capped at `limit`. One hit per
 /// candidate, titled by its best-matching name (the earlier name wins a tie).
-/// Sorted by match kind, then usage, then title length, then title, then ID,
-/// so the order is fully deterministic.
+/// Sorted by tier, then usage, then prior (apps, panes, sections), then keyword
+/// match, then title length, then title, then ID, so the order is fully
+/// deterministic. Only apps match as subsequences: on sentence-long setting
+/// titles nearly every short query is one.
 ///
 /// `query` must already be normalized by [`crate::normalize_query`].
 pub fn search<'a>(
@@ -31,24 +75,31 @@ pub fn search<'a>(
     let mut hits: Vec<Hit<'a>> = candidates
         .iter()
         .filter_map(|candidate| {
-            let (kind, name) = candidate
+            let best = candidate
                 .names
                 .iter()
                 .filter_map(|name| Some((match_key(&name.key, query)?, name)))
-                .min_by_key(|(kind, _)| Reverse(*kind))?;
+                .filter(|(kind, _)| *kind != MatchKind::Subsequence || candidate.kind == Kind::App)
+                .min_by_key(|(kind, _)| Reverse(*kind));
+            let keyword = keyword_match(&candidate.keywords, query);
+            let tier = tier(best.map(|(kind, _)| kind), keyword)?;
             Some(Hit {
                 candidate,
-                title: &name.text,
-                kind,
+                title: best.map_or(candidate.title(), |(_, name)| &name.text),
+                kind: best.map(|(kind, _)| kind),
+                keyword,
+                tier,
                 usage: usage_of(&candidate.id),
             })
         })
         .collect();
 
     hits.sort_by(|a, b| {
-        Reverse(a.kind)
-            .cmp(&Reverse(b.kind))
+        b.tier
+            .cmp(&a.tier)
             .then_with(|| b.usage.total_cmp(&a.usage))
+            .then_with(|| b.candidate.prior().cmp(&a.candidate.prior()))
+            .then_with(|| b.keyword.cmp(&a.keyword))
             .then_with(|| a.title.len().cmp(&b.title.len()))
             .then_with(|| a.title.cmp(b.title))
             .then_with(|| a.candidate.id.cmp(&b.candidate.id))
@@ -175,6 +226,7 @@ mod tests {
             subtitle: String::new(),
             action: Action::OpenUrl(format!("test:{id}")),
             names: names.iter().map(|n| Name::new(n)).collect(),
+            keywords: Vec::new(),
         }
     }
 
@@ -187,10 +239,10 @@ mod tests {
         let candidates = [candidate("settings:wifi#Advanced", Kind::Setting, &["Advanced", "Wi-Fi MAC Address"])];
         let mac = search(&candidates, "mac", 10, |_| 0.0);
         assert_eq!(mac[0].title, "Wi-Fi MAC Address");
-        assert_eq!(mac[0].kind, MatchKind::WordPrefix);
+        assert_eq!(mac[0].kind, Some(MatchKind::WordPrefix));
         let adv = search(&candidates, "adv", 10, |_| 0.0);
         assert_eq!(adv[0].title, "Advanced");
-        assert_eq!(adv[0].kind, MatchKind::Prefix);
+        assert_eq!(adv[0].kind, Some(MatchKind::Prefix));
     }
 
     #[test]
@@ -254,6 +306,130 @@ mod tests {
         assert_eq!(search(&candidates, "d", 10, |_| 0.0).len(), 2);
         assert_eq!(search(&candidates, "d", 1, |_| 0.0).len(), 1);
         assert!(search(&candidates, "", 10, |_| 0.0).is_empty());
+    }
+
+    fn with_keywords(mut candidate: Candidate, keywords: &[&str]) -> Candidate {
+        candidate.keywords = keywords.iter().flat_map(|k| crate::matching::words_of(k)).collect();
+        candidate.keywords.sort();
+        candidate.keywords.dedup();
+        candidate
+    }
+
+    #[test]
+    fn tiers_interleave_title_and_keyword_evidence() {
+        use KeywordMatch::{Complete, Partial};
+        assert_eq!(tier(None, None), None);
+        assert_eq!(tier(Some(MatchKind::Exact), Some(Complete)), Some(Tier::Exact));
+        assert_eq!(tier(None, Some(Complete)), Some(Tier::KeywordComplete));
+        assert_eq!(tier(Some(MatchKind::Substring), Some(Partial)), Some(Tier::KeywordPartial));
+        assert_eq!(tier(Some(MatchKind::Acronym), Some(Complete)), Some(Tier::KeywordComplete));
+        assert!(Tier::WordPrefix > Tier::KeywordComplete);
+        assert!(Tier::KeywordComplete > Tier::Acronym);
+        assert!(Tier::KeywordPartial > Tier::Substring);
+    }
+
+    #[test]
+    fn a_title_word_confirmed_by_a_keyword_counts_as_a_prefix() {
+        assert_eq!(tier(Some(MatchKind::WordPrefix), Some(KeywordMatch::Complete)), Some(Tier::Prefix));
+        assert_eq!(tier(Some(MatchKind::WordPrefix), Some(KeywordMatch::Partial)), Some(Tier::WordPrefix));
+    }
+
+    #[test]
+    fn keywords_find_what_titles_miss() {
+        let candidates = [with_keywords(
+            candidate("settings:appearance", Kind::Setting, &["Appearance"]),
+            &["theme", "Dark Mode"],
+        )];
+        let hits = search(&candidates, "dark mode", 10, |_| 0.0);
+        assert_eq!(ids(&hits), vec!["settings:appearance"]);
+        assert_eq!(hits[0].title, "Appearance", "keyword-only hits show the default title");
+        assert_eq!(hits[0].kind, None);
+        assert_eq!(hits[0].tier, Tier::KeywordComplete);
+    }
+
+    #[test]
+    fn a_confirmed_title_beats_an_unconfirmed_prefix() {
+        let candidates = [
+            candidate("settings:a11y#camera", Kind::Setting, &["Camera Options (Head pointer)"]),
+            with_keywords(
+                candidate("settings:privacy#Privacy_Camera", Kind::Setting, &["Allow applications to access the camera"]),
+                &["camera", "privacy"],
+            ),
+        ];
+        let hits = search(&candidates, "camera", 10, |_| 0.0);
+        assert_eq!(ids(&hits), vec!["settings:privacy#Privacy_Camera", "settings:a11y#camera"]);
+    }
+
+    #[test]
+    fn apps_then_panes_then_sections_break_ties() {
+        let candidates = [
+            candidate("settings:battery#options", Kind::Setting, &["Prevent automatic sleeping"]),
+            candidate("settings:prefs", Kind::Setting, &["Preferences"]),
+            candidate("app:/Applications/Preview.app", Kind::App, &["Preview"]),
+        ];
+        let hits = search(&candidates, "pre", 10, |_| 0.0);
+        assert_eq!(
+            ids(&hits),
+            vec!["app:/Applications/Preview.app", "settings:prefs", "settings:battery#options"]
+        );
+    }
+
+    #[test]
+    fn usage_still_outranks_the_prior() {
+        let candidates = [
+            candidate("settings:battery#options", Kind::Setting, &["Prevent automatic sleeping"]),
+            candidate("app:/Applications/Preview.app", Kind::App, &["Preview"]),
+        ];
+        let hits = search(&candidates, "pre", 10, |id| if id == "settings:battery#options" { 1.0 } else { 0.0 });
+        assert_eq!(ids(&hits)[0], "settings:battery#options");
+    }
+
+    #[test]
+    fn only_apps_match_as_subsequences() {
+        let candidates = [
+            candidate("app:/Applications/Safari.app", Kind::App, &["Safari"]),
+            candidate("settings:x#y", Kind::Setting, &["Scroll speed (Trackpad)"]),
+        ];
+        assert_eq!(ids(&search(&candidates, "sfri", 10, |_| 0.0)), vec!["app:/Applications/Safari.app"]);
+        assert!(search(&candidates, "sleep", 10, |_| 0.0).is_empty(), "s-l-e-e-p is scattered through the title");
+    }
+
+    /// Real queries against this Mac's apps and settings: the expected
+    /// destination (an ID suffix) must rank within the first `within` results.
+    /// A regression check for ranking changes, not a benchmark.
+    #[test]
+    fn real_queries_find_the_expected_destination() {
+        let candidates = crate::candidate::build(&crate::apps::discover_apps(), &crate::settings::discover_settings());
+        let cases: &[(&str, &str, usize)] = &[
+            ("camera", "#Privacy_Camera", 1),
+            ("mac address", "wifi-settings-extension#Advanced", 2),
+            ("dark mode", "settings:com.apple.Appearance-Settings.extension", 1),
+            ("screen saver", "#ScreenSaver", 2),
+            ("firewall", "#Firewall", 1),
+            ("night shift", "#nightShiftSection", 1),
+            ("bluetooth", "settings:com.apple.BluetoothSettings", 1),
+            ("wifi", "settings:com.apple.wifi-settings-extension", 1),
+            ("keyboard", "settings:com.apple.Keyboard-Settings.extension", 1),
+            ("printer", "settings:com.apple.Print-Scan-Settings.extension", 1),
+            ("ssh", "#Services_RemoteLogin", 1),
+            ("dnd", "settings:com.apple.Focus-Settings.extension", 1),
+            ("full disk access", "#Privacy_AllFiles", 1),
+            ("natural scrolling", "Trackpad-Settings.extension#trackpadTab", 2),
+            ("sys", "System Settings.app", 1),
+            ("prev", "Preview.app", 1),
+            ("activity", "Activity Monitor.app", 1),
+            ("safari", "Safari.app", 1),
+            ("term", "Terminal.app", 1),
+        ];
+        let mut failures = Vec::new();
+        for &(query, expected, within) in cases {
+            let hits = search(&candidates, query, 10, |_| 0.0);
+            let rank = hits.iter().position(|hit| hit.candidate.id.ends_with(expected));
+            if rank.is_none_or(|rank| rank >= within) {
+                failures.push(format!("{query:?}: {expected} at {rank:?}, top {:?}", names_of(&hits[..hits.len().min(3)])));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     #[test]

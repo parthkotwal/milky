@@ -464,3 +464,56 @@ Consequences:
   launcher refuses to search (version mismatch). Do not rebuild the daily
   launcher until both sides are on v3.
 
+---
+
+## 2026-10-08 — Keywords as separate evidence; ranking by tier, then usage, then destination prior
+
+Status: implemented.
+
+Decision:
+
+- Multi-word queries: a title matches as `WordPrefix` when every query word
+  starts some title word, in any order (`mac address`, `turn display`).
+- Settings keywords (Apple's `.searchTerms` `index`) become a per-destination
+  set of folded words. A keyword match is `Complete` (every query word is a
+  whole keyword word) or `Partial` (every query word starts one). A pane takes
+  the keywords of items titled like it.
+- The first sort key is a `search::Tier`, weakest to strongest: Subsequence,
+  Substring, KeywordPartial, Acronym, KeywordComplete, WordPrefix, Prefix,
+  Exact. A title `WordPrefix` confirmed by a `Complete` keyword counts as
+  `Prefix`.
+- Order: tier, then usage, then prior (app > pane > section), then keyword
+  match, then title length, title, ID. This refines "usage breaks ties within
+  a match kind": usage still never outranks stronger evidence.
+- Subsequence matches apply to apps only.
+- No inverted index yet: a linear scan of ~4,700 keyword words keeps queries
+  at ~75-90 us.
+
+Why:
+
+Measured against ~70 hand-written queries (settings plus app queries that
+must not regress), across six designs in a scratch copy. Top-1 went from
+51/73 to 60/73 and top-3 from 62/73 to 70/73. Findings that drove each rule:
+
+- `dark mode`, `ssh`, `dnd`, `full disk access` matched nothing on titles.
+- `camera` ranked Accessibility's keyword-less "Camera Options" (prefix) above
+  the privacy setting whose keywords say "camera"; the confirmed-word rule is
+  the only change that fixed it without regressing others.
+- Settings titles already crowded apps on prefixes (`prev` → "Prevent
+  automatic sleeping…" over Preview; `sys` → "System voice" over System
+  Settings). The prior fixes this at cold start; usage overrides it.
+- On sentence-long titles almost any short query is a subsequence: subsequence
+  results in the top 5 fell from 67 to 5 across the set.
+- An index pays for itself at file scale, not at 4,700 words.
+
+Consequences:
+
+- `match_kind` on the wire gains `"keyword"` (only keywords matched). Additive;
+  Swift does not interpret it, so the ABI stays 3.
+- Known misses: `location` ranks Family's "Location Sharing" first; `display`
+  ranks Accessibility's "Display" above the Displays pane; plurals do not
+  stem (`hot corners` vs keyword `hot corner`); `screen recording` has no
+  matching keyword for the right entry.
+- Pinned by `search::tests::real_queries_find_the_expected_destination` (19
+  real queries on this Mac). The prior and tier ladder are hand-set guesses;
+  revisit them with offline replay of `events.jsonl` once it has data.

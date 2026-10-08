@@ -256,3 +256,27 @@ Lesson:
 When enumerating system bundles, treat each one as untrusted input: skip what
 does not parse rather than failing the whole scan.
 
+---
+
+## 2026-10-08 — Settings keywords for whole panes were silently dropped
+
+Status: resolved
+Area: rust-core
+
+Symptom:
+`dark mode` found nothing, although Apple's Appearance entry lists "Dark Mode"
+as a keyword.
+
+Cause:
+`candidate::from_settings` skips items titled like their pane (the pane
+candidate covers them). Their keywords were skipped with them, and for several
+panes (Appearance, Battery) those are the pane's only keywords.
+
+Fix / workaround:
+The pane candidate takes the keywords of items it covers. Pinned by
+`candidate::tests::sections_collect_their_items_keywords`.
+
+Lesson:
+When collapsing several records into one, carry every field across, not just
+the one that decided the merge. Found by dumping the real data before designing
+ranking; do that first.
