@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use milky_core::engine::Engine;
-use milky_core::search::AppMatch;
+use milky_core::search::Hit;
 
 const USAGE: &str = "\
 milky — dev driver for the Milky search engine
@@ -20,7 +20,7 @@ milky — dev driver for the Milky search engine
 USAGE:
     milky <query>...          search, print ranked results
     milky                     interactive: one query per line, one warm engine
-    milky --count             how many apps are indexed
+    milky --count             how many apps and settings are indexed
     milky --settings          list System Settings panes and their sections
 
 OPTIONS:
@@ -62,7 +62,12 @@ fn main() -> ExitCode {
     let started = Instant::now();
     let engine = Engine::new();
     let scan = started.elapsed();
-    eprintln!("indexed {} apps in {:.1?}", engine.app_count(), scan);
+    eprintln!(
+        "indexed {} apps and {} settings in {:.1?}",
+        engine.app_count(),
+        engine.settings_count(),
+        scan
+    );
 
     if options.count {
         return ExitCode::SUCCESS;
@@ -141,24 +146,28 @@ fn run_query(engine: &Engine, query: &str, limit: usize) {
     print_results(&results, elapsed);
 }
 
-fn print_results(results: &[AppMatch], elapsed: std::time::Duration) {
+fn print_results(results: &[Hit<'_>], elapsed: std::time::Duration) {
     if results.is_empty() {
         println!("  no matches  ({elapsed:.1?})");
         return;
     }
 
-    // Pad names to a common width so the match kinds line up and the ranking is
+    // Pad titles to a common width so the columns line up and the ranking is
     // readable at a glance.
-    let widest = results.iter().map(|m| m.name.len()).max().unwrap_or(0);
+    let widest = results
+        .iter()
+        .map(|hit| hit.title.chars().count())
+        .max()
+        .unwrap_or(0);
 
-    for (index, result) in results.iter().enumerate() {
+    for (index, hit) in results.iter().enumerate() {
         println!(
-            "  {rank:>2}. {name:<width$}  {kind:<10}  {path}",
+            "  {rank:>2}. {title:<width$}  {kind:<11}  {subtitle}",
             rank = index + 1,
-            name = result.name,
+            title = hit.title,
             width = widest,
-            kind = format!("{:?}", result.kind),
-            path = result.path.display(),
+            kind = format!("{:?}", hit.kind),
+            subtitle = hit.candidate.subtitle,
         );
     }
     println!("  {} results in {elapsed:.1?}", results.len());

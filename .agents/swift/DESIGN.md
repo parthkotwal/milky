@@ -1,6 +1,7 @@
 # Milky native design direction
 
-Status: implemented native panel with real Rust app search and explicit fixture mode.
+Status: implemented native panel with real Rust app and System Settings search
+and explicit fixture mode.
 Adapted from the user's supplied frontend-design guidance for a native macOS
 launcher. These defaults can be refined through real visual and interaction QA.
 
@@ -107,9 +108,10 @@ text describes explicit fixture inputs rather than invented usage suggestions.
 
 ## Real search mode — 2026-09-13
 
-Normal launch uses an Applications footer and a neutral empty-query prompt.
+Normal launch uses an Apps & Settings footer and a neutral empty-query prompt.
 Only explicit fixture mode shows the Fixtures label and development examples.
-Layout and keyboard interaction are shared; real order/names come from Rust.
+Layout and keyboard interaction are shared; real order, titles, subtitles, and
+primary actions come from Rust.
 Startup/ABI/response failures remain visible errors with Retry, never demo data.
 
 ## Invocation accessibility — 2026-09-14
@@ -123,11 +125,16 @@ against normal and selected surfaces in both appearances.
 
 ## Result and search-state refinement — 2026-10-08
 
-Result subtitles show the last two parent-folder components joined with a
-chevron, such as `Applications › Python 3.12`. This distinguishes duplicate
-application names while removing repeated absolute-path prefixes from the
-visual list. VoiceOver labels and tooltips continue to expose the full path;
-this supersedes the earlier visual default of showing the absolute path inline.
+Result rows show Rust-provided subtitles directly. App subtitles use the
+containing folder (for duplicate `IDLE` results, `Python 3.12` and `Python 3.13`);
+settings subtitles use their pane name, or `System Settings` for a pane result.
+Settings rows use a system-settings symbol, while apps retain their native icons.
+The title is the best matching name for the destination. The full app path stays
+available to assistive technology; settings expose their title, pane, and kind.
+
+This supersedes the earlier two-folder location label: core owns destination
+identity and supplies a concise subtitle that works consistently for apps and
+settings.
 
 When a new query is still within the short-search grace period, the result area
 stays visually quiet instead of showing an empty-state icon. Once the delay

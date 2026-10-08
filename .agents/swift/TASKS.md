@@ -2,9 +2,11 @@
 
 ## Current milestone
 
-Invoke Milky, type a query, navigate real app results, and open or activate the
-selected application. This is the native foundation for the broader product.
-Real Rust app search is connected. Explicit fixtures remain available for UI QA.
+Invoke Milky, type a query, navigate real app and settings results, and execute
+the selected destination's primary action. This is the native foundation for
+the broader product. Real Rust search is connected. Explicit fixtures remain
+available for UI QA. Contract v3 supplies app and System Settings destinations;
+the native adapter executes each result's declared primary action.
 
 ## Now
 
@@ -15,6 +17,8 @@ Real Rust app search is connected. Explicit fixtures remain available for UI QA.
       native open/activate actions. Control–Option–Space is configurable and
       does not modify system shortcuts. Core acceptance passed on 2026-09-14.
 - [x] Connect the agreed ABI 2 search boundary through the real Swift adapter.
+- [x] Adopt ABI 3 result IDs, kinds, titles, subtitles, actions, and ID-based
+      selection events; support opening System Settings deep links.
 - [x] Build Rust before Swift and invalidate stale static linkage in the dev scripts.
 
 Status: native app-search foundation complete. The remaining checks below are
@@ -24,8 +28,8 @@ quality follow-ups; they do not block the next product capability.
 
 1. Run focused dogfooding QA with a physical mouse, VoiceOver enabled, a second
    display, Spaces, and a full-screen app. Fix only failures actually observed.
-2. When the core returns a result type and supported actions, add a compact
-   action picker and preview surface. Keep the initial row/Enter action fast.
+2. Run interaction QA for mixed app/setting results and confirm a settings
+   deep link opens the intended pane. Keep the initial row/Enter action fast.
 
 ## Soon
 
@@ -73,10 +77,11 @@ apps/macos/scripts/run-fixtures.sh
 ```
 
 This wraps `run.sh --fixtures` and now also builds the linked Rust archive.
-Inputs: name substrings, `all`, `slow`, `error`, `zzzz`, `IDLE`, `Unavailable`.
-Real mode does not treat those words as fixture commands. Enter opens real app
-URLs in either mode. Selection events are saved only in real Rust mode; fixture
-mode never writes usage history.
+Inputs: title/subtitle substrings, `all`, `slow`, `error`, `zzzz`, `IDLE`, `Unavailable`.
+Real mode does not treat those words as fixture commands. Enter performs the
+selected fixture action or opens the real app/settings destination in Rust
+mode. Selection events are saved only in real Rust mode; fixture mode never
+writes usage history.
 
 To inspect a launcher state without activating a window or taking keyboard
 focus, render an offscreen PNG:
@@ -199,3 +204,18 @@ to the implemented invocation behavior.
 The native app-search foundation and first real selection-event wiring are
 complete. Next implementation work is focused native dogfooding, then action
 previews when the core supplies supported actions.
+
+## QA evidence — 2026-10-08 — Contract v3 adapter
+
+- `apps/macos/scripts/build.sh test` passes 22 tests. The real linked Rust
+  engine returns settings results for `wifi`; Swift decodes their destination
+  IDs, titles, subtitles, and `x-apple.systempreferences` open actions. Fixture
+  decoding also covers both app and setting result rows.
+- Offscreen snapshots of the mixed fixture list and settings-only results were
+  rendered in dark and light appearance. The settings rows use a native symbol
+  and the pane subtitle; app rows retain native icons and folder subtitles.
+  Snapshot generation verified the foreground app stayed unchanged.
+- The native opener's System Settings handoff is implemented but has not been
+  activated in a live panel during this pass. Keep this as a focused manual
+  check; the user may run Milky without requiring keyboard or screen focus from
+  the test harness.

@@ -31,11 +31,14 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       (DECISIONS 2026-10-08). 103 Rust tests.
 - [x] Swift sends `record_selection` after real open attempts (Swift owner,
       2026-10-08; verified in native tests and real bridge contract tests).
+- [ ] Swift adapter on contract v3: decode `id`/`kind`/`title`/`subtitle`/`action`,
+      open URLs, send result IDs (Swift owner). See `.agents/swift/INTEGRATION.md`.
 - [x] Rank with usage: break ties within a match kind by decayed launch score
       (DECISIONS 2026-10-08). 107 Rust tests.
 - [ ] Offline ranking evaluation over `events.jsonl` once real selections exist:
       replay logged queries, compare rankers by where the pick lands (e.g. MRR).
-- [ ] Define the common candidate/result/action data model.
+- [x] Define the common candidate/result/action data model: `candidate.rs`,
+      destination IDs, `Action` (launch / open URL), contract v3 (DECISIONS 2026-10-08).
 - [x] Install full Xcode. Resolved in ISSUES.md; verify the active developer
       directory on a fresh machine.
 - [x] Define the selection event schema (DECISIONS 2026-10-08). Dismissal
@@ -57,8 +60,8 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          used: 45 bundles run on this machine while about three are in use.
 - [ ] A running app's action is "switch to", not "launch". Affects the result
       model, not just ranking.
-- [ ] Results need a subtitle: three Python installs each ship `IDLE.app`, so
-      the list shows the same word three times.
+- [x] Results carry a subtitle; the three `IDLE.app`s read "Python 3.10/3.11/3.12"
+      (contract v3, 2026-10-08).
 - [x] camelCase word boundaries: `ColorSync` yields words and initials `c`, `s`;
       whole-word initials still count (2026-10-08).
 - [x] Unicode: queries and names fold accents, compatibility forms, and invisible
@@ -104,9 +107,8 @@ Keep entries concise. Remove or move completed items when they no longer help fu
         → Night Shift panel; `com.apple.wifi-settings-extension?Advanced` →
         Advanced panel. Some sections open as a sheet over the pane. A link sent
         while a sheet is closing can be ignored.
-      - Identity: settings have no file path. The usage store and
-        `record_selection` validation assume absolute paths; both must move to
-        stable IDs.
+      - Identity: resolved 2026-10-08. Destination IDs (contract v3); usage
+        history keyed by path migrates to `app:<path>` on load.
       - Punctuation: Apple writes "Wi‑Fi" with U+2011. `wifi` only matches as a
         subsequence and `wi-fi` not at all; hyphens need folding.
       Step 1 done 2026-10-08 (`settings.rs`, `milky --settings`): 51 panes,
@@ -120,6 +122,10 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       by hardware (Mouse without a mouse, Classroom) are still listed;
       Accessibility is 342 of 711 items, so keyword matches must not flood
       results; English only.
+      Searchable since 2026-10-08 (contract v3): pane names and section titles.
+      Next: step 3, keyword matching and ranking ("camera" currently ranks
+      Accessibility's Camera Options above the privacy setting; "mac address"
+      only substring-matches), with dashes now folded (step 4 done).
 - [ ] System actions (sleep, lock, empty trash, etc.).
 - [ ] Web-search fallback.
 - [x] Usage-history persistence.

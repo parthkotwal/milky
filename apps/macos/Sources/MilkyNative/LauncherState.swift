@@ -118,7 +118,7 @@ public final class LauncherState {
         } catch {
             recordSelection(query: eventQuery, shown: shownIDs, selected: result.id, outcome: .failed)
             if active, generation == token {
-                errorMessage = "Couldn’t open \(result.name). \(error.localizedDescription)"
+                errorMessage = "Couldn’t open \(result.title). \(error.localizedDescription)"
             }
         }
         isOpening = false

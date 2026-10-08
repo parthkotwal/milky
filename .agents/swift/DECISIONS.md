@@ -162,3 +162,26 @@ the alternate binding a global default for other users.
 Consequences: The OS shortcut must be released in Keyboard Shortcuts before
 Milky can register ⌘Space. The active shortcut is reflected in the menu-bar
 Show item; registration failures retain the existing visible fallback.
+
+## 2026-10-08 — Adapt native results to contract v3
+
+Decision: Keep the Swift presentation value destination-oriented: stable `id`,
+`kind`, `title`, `subtitle`, and a typed primary action (`launch` or `openURL`).
+Decode and validate the full wire action before releasing Rust memory. Native
+execution dispatches by action, while the view uses core titles/subtitles and
+native icons for apps or an SF Symbol for settings.
+
+Why: Settings have no application path, and an app's path is an action target,
+not its identity. Keeping both in a typed Swift value makes duplicate display
+names safe and lets the same list and selection state cover different result
+types without teaching the UI the wire JSON shape.
+
+Alternatives: Retaining an app-only `url` property would make settings awkward
+and invite invalid file URLs. Deriving display subtitles from paths would
+duplicate presentation policy already owned by core.
+
+Consequences: ABI 3 IDs are used unchanged for list identity and usage events.
+App IDs must match their absolute launch path; setting actions need a URL scheme.
+The opener launches or activates apps and opens settings links through
+`NSWorkspace`. Fixtures cover both kinds but still do not record usage. The
+shared contract is documented in `INTEGRATION.md` and the shared decision log.

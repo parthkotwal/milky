@@ -2,13 +2,14 @@
 //!
 //! These types are the Swift ↔ Rust contract (DECISIONS 2026-09-13). They are
 //! kept separate from the engine's own types on purpose: `MatchKind` and
-//! `AppMatch` change for ranking reasons, and a ranking change must never
+//! `Hit` change for ranking reasons, and a ranking change must never
 //! silently change what a client receives. Conversion is explicit, below.
 
 use serde::{Deserialize, Serialize};
 
 use crate::matching::MatchKind;
-use crate::search::AppMatch;
+use crate::candidate::{Action, Kind};
+use crate::search::Hit;
 
 /// A request from a client. Tagged by `"op"`: `{"op":"search", ...}`.
 #[derive(Debug, Deserialize)]
@@ -45,12 +46,37 @@ pub struct SearchResponse {
     pub results: Vec<ResultItem>,
 }
 
+/// One search result on the wire (contract v3, DECISIONS 2026-10-08).
 #[derive(Debug, Serialize)]
 pub struct ResultItem {
-    /// Identity. App names are not unique.
-    pub path: String,
-    pub name: String,
+    /// Identity of the destination: `app:<path>`, `settings:<pane id>`, or
+    /// `settings:<pane id>#<anchor>`. Usage and selections attach to this.
+    pub id: String,
+    /// Nested inside `results`, so it does not collide with the response's
+    /// own `kind` tag.
+    pub kind: WireKind,
+    /// The name that matched best.
+    pub title: String,
+    pub subtitle: String,
+    pub action: WireAction,
     pub match_kind: WireMatchKind,
+}
+
+/// Which kind of thing a result is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireKind {
+    App,
+    Setting,
+}
+
+/// What picking a result does, tagged by `"type"`:
+/// `{"type":"launch","path":...}` or `{"type":"open_url","url":...}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WireAction {
+    Launch { path: String },
+    OpenUrl { url: String },
 }
 
 /// Match kind as clients see it: a stable name, never a number.
@@ -89,9 +115,9 @@ pub const MAX_SHOWN: usize = 100;
 pub struct SelectionEvent {
     /// The query as typed when the user acted.
     pub query: String,
-    /// Result paths in the order they were displayed.
+    /// Result IDs in the order they were displayed.
     pub shown: Vec<String>,
-    /// The path the user picked. Must be one of `shown`.
+    /// The ID the user picked. Must be one of `shown`.
     pub selected: String,
     pub outcome: Outcome,
 }
@@ -119,13 +145,22 @@ impl SelectionEvent {
                 self.shown.len()
             ));
         }
-        if !self.shown.iter().all(|path| path.starts_with('/')) {
-            return Err("every shown path must be absolute".into());
+        if let Some(bad) = self.shown.iter().find(|id| !is_result_id(id)) {
+            return Err(format!("not a result id: {bad:?}"));
         }
         if !self.shown.contains(&self.selected) {
             return Err("selected must be one of shown".into());
         }
         Ok(())
+    }
+}
+
+/// `app:/<absolute path>` or `settings:<pane id>` with an optional `#<anchor>`.
+fn is_result_id(id: &str) -> bool {
+    match id.split_once(':') {
+        Some(("app", rest)) => rest.starts_with('/'),
+        Some(("settings", rest)) => !rest.is_empty() && !rest.starts_with('#'),
+        _ => false,
     }
 }
 
@@ -146,16 +181,33 @@ impl From<MatchKind> for WireMatchKind {
     }
 }
 
-/// Convert an engine match into a wire result.
+impl From<Kind> for WireKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::App => WireKind::App,
+            Kind::Setting => WireKind::Setting,
+        }
+    }
+}
+
+/// Convert a search hit into a wire result.
 ///
-/// Returns `None` if the path is not valid UTF-8: a lossily converted path
-/// would be a broken identity that clients could not open.
-pub fn result_item(m: &AppMatch) -> Option<ResultItem> {
-    let path = m.path.to_str()?.to_string();
+/// Returns `None` if an app path is not valid UTF-8: a lossily converted path
+/// would be an action clients could not perform. Matching on `Action` here is
+/// exhaustive, so a new action kind cannot compile until the wire handles it.
+pub fn result_item(hit: &Hit) -> Option<ResultItem> {
+    let candidate = hit.candidate;
+    let action = match &candidate.action {
+        Action::Launch(path) => WireAction::Launch { path: path.to_str()?.to_string() },
+        Action::OpenUrl(url) => WireAction::OpenUrl { url: url.clone() },
+    };
     Some(ResultItem {
-        path,
-        name: m.name.clone(),
-        match_kind: m.kind.into(),
+        id: candidate.id.clone(),
+        kind: candidate.kind.into(),
+        title: hit.title.to_string(),
+        subtitle: candidate.subtitle.clone(),
+        action,
+        match_kind: hit.kind.into(),
     })
 }
 
@@ -175,6 +227,10 @@ mod tests {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     use std::path::PathBuf;
+
+    use crate::apps::App;
+    use crate::candidate::Candidate;
+    use crate::settings::{SettingsItem, SettingsPane};
 
     #[test]
     fn wire_kinds_have_stable_snake_case_names() {
@@ -201,30 +257,67 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_utf8_path_becomes_a_result() {
-        let m = AppMatch {
-            name: "Safari".into(),
-            path: PathBuf::from("/Applications/Safari.app"),
-            kind: MatchKind::Exact,
-            usage: 0.0,
-        };
-        let item = result_item(&m).expect("utf-8 path should convert");
-        assert_eq!(item.path, "/Applications/Safari.app");
-        assert_eq!(item.match_kind, WireMatchKind::Exact);
+    fn hit_for(candidate: &Candidate) -> Hit<'_> {
+        Hit { candidate, title: candidate.title(), kind: MatchKind::Exact, usage: 0.0 }
     }
 
     #[test]
-    fn a_non_utf8_path_is_skipped_not_mangled() {
+    fn an_app_hit_becomes_a_launch_result() {
+        let app = App::new(PathBuf::from("/Applications/Python 3.12/IDLE.app"), "IDLE".into());
+        let candidate = crate::candidate::from_app(&app).unwrap();
+        let item = result_item(&hit_for(&candidate)).expect("utf-8 path");
+        assert_eq!(
+            serde_json::to_value(&item).unwrap(),
+            serde_json::json!({
+                "id": "app:/Applications/Python 3.12/IDLE.app",
+                "kind": "app",
+                "title": "IDLE",
+                "subtitle": "Python 3.12",
+                "action": {"type": "launch", "path": "/Applications/Python 3.12/IDLE.app"},
+                "match_kind": "exact"
+            })
+        );
+    }
+
+    #[test]
+    fn a_settings_hit_becomes_an_open_url_result() {
+        let pane = SettingsPane {
+            id: "com.apple.wifi-settings-extension".into(),
+            name: "Wi-Fi".into(),
+            in_sidebar: true,
+            items: vec![SettingsItem {
+                anchor: "Advanced".into(),
+                title: "Wi-Fi MAC Address".into(),
+                keywords: vec![],
+            }],
+        };
+        let candidates = crate::candidate::from_settings(&pane);
+        let item = result_item(&hit_for(&candidates[1])).unwrap();
+        assert_eq!(
+            serde_json::to_value(&item).unwrap(),
+            serde_json::json!({
+                "id": "settings:com.apple.wifi-settings-extension#Advanced",
+                "kind": "setting",
+                "title": "Wi-Fi MAC Address",
+                "subtitle": "Wi-Fi",
+                "action": {"type": "open_url", "url": "x-apple.systempreferences:com.apple.wifi-settings-extension?Advanced"},
+                "match_kind": "exact"
+            })
+        );
+    }
+
+    #[test]
+    fn a_non_utf8_app_path_is_skipped_not_mangled() {
         // 0xFF can never appear in UTF-8.
         let path = PathBuf::from(OsStr::from_bytes(b"/Applications/\xff.app"));
-        let m = AppMatch {
-            name: "Broken".into(),
-            path,
-            kind: MatchKind::Prefix,
-            usage: 0.0,
+        let candidate = Candidate {
+            id: "app:/Applications/broken.app".into(),
+            kind: Kind::App,
+            subtitle: String::new(),
+            action: Action::Launch(path),
+            names: vec![crate::candidate::Name::new("Broken")],
         };
-        assert!(result_item(&m).is_none());
+        assert!(result_item(&hit_for(&candidate)).is_none());
     }
 
     fn selection(selected: &str, shown: &[&str]) -> SelectionEvent {
@@ -239,11 +332,11 @@ mod tests {
     #[test]
     fn record_selection_parses_from_the_contract_shape() {
         let json = r#"{"op":"record_selection","query":"c",
-            "shown":["/System/Applications/Chess.app","/System/Applications/Calendar.app"],
-            "selected":"/System/Applications/Calendar.app","outcome":"opened"}"#;
+            "shown":["app:/System/Applications/Chess.app","app:/System/Applications/Calendar.app"],
+            "selected":"app:/System/Applications/Calendar.app","outcome":"opened"}"#;
         match serde_json::from_str::<Request>(json).expect("valid request") {
             Request::RecordSelection(event) => {
-                assert_eq!(event.selected, "/System/Applications/Calendar.app");
+                assert_eq!(event.selected, "app:/System/Applications/Calendar.app");
                 assert_eq!(event.outcome, Outcome::Opened);
                 assert_eq!(event.shown.len(), 2);
             }
@@ -261,14 +354,16 @@ mod tests {
 
     #[test]
     fn a_consistent_selection_validates() {
-        let event = selection("/A.app", &["/B.app", "/A.app"]);
+        let event = selection("app:/A.app", &["app:/B.app", "app:/A.app"]);
         assert_eq!(event.validate(), Ok(()));
+        let section = "settings:com.apple.wifi-settings-extension#Advanced";
+        assert_eq!(selection(section, &[section]).validate(), Ok(()));
     }
 
     #[test]
     fn selected_must_have_been_shown() {
         assert!(
-            selection("/C.app", &["/A.app", "/B.app"])
+            selection("app:/C.app", &["app:/A.app", "app:/B.app"])
                 .validate()
                 .is_err()
         );
@@ -276,18 +371,20 @@ mod tests {
 
     #[test]
     fn shown_must_not_be_empty() {
-        assert!(selection("/A.app", &[]).validate().is_err());
+        assert!(selection("app:/A.app", &[]).validate().is_err());
     }
 
     #[test]
-    fn relative_paths_are_rejected() {
-        assert!(selection("A.app", &["A.app"]).validate().is_err());
+    fn only_result_ids_are_accepted() {
+        for bad in ["/A.app", "app:A.app", "settings:", "settings:#Advanced", "files:/A", "A.app"] {
+            assert!(selection(bad, &[bad]).validate().is_err(), "{bad} should be rejected");
+        }
     }
 
     #[test]
     fn oversized_shown_lists_are_rejected() {
-        let many: Vec<String> = (0..=MAX_SHOWN).map(|i| format!("/{i}.app")).collect();
+        let many: Vec<String> = (0..=MAX_SHOWN).map(|i| format!("app:/{i}.app")).collect();
         let refs: Vec<&str> = many.iter().map(String::as_str).collect();
-        assert!(selection("/0.app", &refs).validate().is_err());
+        assert!(selection("app:/0.app", &refs).validate().is_err());
     }
 }

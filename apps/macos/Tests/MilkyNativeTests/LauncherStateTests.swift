@@ -28,8 +28,8 @@ private actor SelectionRecorder: SelectionEventRecording {
 }
 
 @MainActor final class LauncherStateTests: XCTestCase {
-    private let first = AppResult(id: "one", name: "IDLE", url: URL(fileURLWithPath: "/one/IDLE.app"))
-    private let second = AppResult(id: "two", name: "IDLE", url: URL(fileURLWithPath: "/two/IDLE.app"))
+    private let first = AppResult(id: "app:/one/IDLE.app", title: "IDLE", subtitle: "one", action: .launch(URL(fileURLWithPath: "/one/IDLE.app")))
+    private let second = AppResult(id: "app:/two/IDLE.app", title: "IDLE", subtitle: "two", action: .launch(URL(fileURLWithPath: "/two/IDLE.app")))
 
     private func waitFor(_ predicate: () async -> Bool) async throws {
         for _ in 0..<2000 {
@@ -57,7 +57,7 @@ private actor SelectionRecorder: SelectionEventRecording {
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(state.results, [second])
         await state.openSelected()
-        XCTAssertEqual(opener.opened, ["two"])
+        XCTAssertEqual(opener.opened, ["app:/two/IDLE.app"])
     }
 
     func testDuplicateIdentityRefreshAndNewQuerySelection() async throws {
@@ -68,21 +68,21 @@ private actor SelectionRecorder: SelectionEventRecording {
         await provider.succeed("idle", [first, second])
         try await waitFor { !state.isSearching }
         state.moveSelection(1)
-        XCTAssertEqual(state.selectedID, "two")
+        XCTAssertEqual(state.selectedID, "app:/two/IDLE.app")
         state.moveSelection(1)
-        XCTAssertEqual(state.selectedID, "two")
+        XCTAssertEqual(state.selectedID, "app:/two/IDLE.app")
         state.refresh()
         try await waitFor { await provider.contains("idle") }
         XCTAssertFalse(state.canOpen)
         await provider.succeed("idle", [second, first])
         try await waitFor { !state.isSearching }
-        XCTAssertEqual(state.selectedID, "two")
+        XCTAssertEqual(state.selectedID, "app:/two/IDLE.app")
         state.setQuery("different")
         XCTAssertNil(state.selectedID)
         try await waitFor { await provider.contains("different") }
         await provider.succeed("different", [first, second])
         try await waitFor { !state.isSearching }
-        XCTAssertEqual(state.selectedID, "one")
+        XCTAssertEqual(state.selectedID, "app:/one/IDLE.app")
     }
 
     func testEmptyFailureRecoveryAndActionFailure() async throws {
@@ -132,7 +132,7 @@ private actor SelectionRecorder: SelectionEventRecording {
         await state.openSelected()
         try await waitFor { await recorder.recordedEvents().count == 1 }
         let failedEvent = await recorder.recordedEvents()[0]
-        XCTAssertEqual(failedEvent, SelectionEvent(query: "idle", shown: ["one", "two"], selected: "two", outcome: .failed))
+        XCTAssertEqual(failedEvent, SelectionEvent(query: "idle", shown: ["app:/one/IDLE.app", "app:/two/IDLE.app"], selected: "app:/two/IDLE.app", outcome: .failed))
 
         opener.fails = false
         await state.openSelected()
@@ -154,17 +154,6 @@ private actor SelectionRecorder: SelectionEventRecording {
         XCTAssertLessThan(unwrapped.count, 100_000)
         let missing = await IconCache.shared.data(for: URL(fileURLWithPath: "/tmp/Milky Fixtures/DoesNotExist.app"))
         XCTAssertNil(missing)
-    }
-
-    func testResultLocationKeepsUsefulParentNamesWithoutFullAbsolutePath() {
-        XCTAssertEqual(
-            LauncherTheme.locationLabel(for: URL(fileURLWithPath: "/Applications/Python 3.12/IDLE.app")),
-            "Applications › Python 3.12"
-        )
-        XCTAssertEqual(
-            LauncherTheme.locationLabel(for: URL(fileURLWithPath: "/System/Applications/Calculator.app")),
-            "System › Applications"
-        )
     }
 
     func testRemovedSelectionAndLateErrorDoNotCorruptCurrentResults() async throws {

@@ -20,7 +20,10 @@ use crate::storage::{self, StorageError, append_line};
 pub const FILE_NAME: &str = "events.jsonl";
 
 /// Bump when the meaning or shape of a logged record changes.
-pub const LOG_VERSION: u32 = 1;
+///
+/// 1: `shown` and `selected` were app paths. 2: they are result IDs
+/// (`app:/...`, `settings:...`; contract v3). Readers must accept both.
+pub const LOG_VERSION: u32 = 2;
 
 /// Which kind of interaction a log line records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +41,7 @@ pub struct LoggedSelection {
     /// engine stamps time rather than trusting the client's clock.
     pub at_ms: u64,
     pub query: String,
-    /// Paths in the order they were displayed.
+    /// Result IDs in the order they were displayed.
     pub shown: Vec<String>,
     pub selected: String,
     pub outcome: Outcome,
@@ -79,10 +82,10 @@ mod tests {
         SelectionEvent {
             query: "c".into(),
             shown: vec![
-                "/System/Applications/Chess.app".into(),
-                "/System/Applications/Calendar.app".into(),
+                "app:/System/Applications/Chess.app".into(),
+                "app:/System/Applications/Calendar.app".into(),
             ],
-            selected: "/System/Applications/Calendar.app".into(),
+            selected: "app:/System/Applications/Calendar.app".into(),
             outcome: Outcome::Opened,
         }
     }

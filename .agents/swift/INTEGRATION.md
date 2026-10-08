@@ -84,7 +84,35 @@ learning-first). Swift adapter and linking — Swift owner.
 - Matching is now accent-insensitive and camelCase-aware. Result order still
   comes entirely from Rust; no Swift change is required.
 
-## Pending coordination
+## Agreed integration
+
+### Contract v3 — agreed and wired 2026-10-08
+
+Authoritative text: shared [`../DECISIONS.md`](../DECISIONS.md), "Results carry
+a kind, an action, and a destination ID (contract v3)". Swift-side summary:
+
+- `milky_abi_version()` becomes 3. Results replace `path`/`name` with `id`,
+  `kind` (`app` | `setting`), `title`, `subtitle`, and `action`
+  (`{"type":"launch","path":...}` or `{"type":"open_url","url":...}`).
+  `match_kind` is unchanged.
+- Use `id` as the stable identity (it is no longer a path). Open `launch`
+  actions as today; open `open_url` actions with `NSWorkspace.open(URL)`.
+  Show `subtitle` under the title.
+- `record_selection` sends result `id`s in `shown` and `selected`.
+- **Rust side wired 2026-10-08.** `milky_abi_version()` returns 3 and
+  `milky.h` says 3. Verified from C against the real archive: v3 search and
+  selection round trips, 1000 requests, 0 leaks. `record_selection` with a
+  bare path now answers `bad_request` ("not a result id").
+- **Swift side wired 2026-10-08.** The actor validates ABI 3, decodes `id`,
+  `kind`, `title`, `subtitle`, and the tagged action into Swift-owned values
+  before releasing Rust memory. App IDs must agree with their absolute launch
+  path; setting URLs must have a scheme; duplicate or malformed IDs/actions
+  are rejected. Native actions launch or activate app bundles and open settings
+  deep links with `NSWorkspace.open`. Usage events report result IDs. Fixtures
+  cover both kinds; fixture mode remains excluded from recording.
+- The engine indexes 127 apps and 606 settings destinations; construction takes
+  about 90 ms, so keep creating it off the main thread.
+
 
 ### Selection events — agreed and wired 2026-10-08
 
@@ -94,7 +122,7 @@ events and durable usage history". Swift-side summary:
 - After acting on a picked result, send one
   `{"op":"record_selection","query":...,"shown":[...],"selected":...,"outcome":"opened"|"failed"}`
   through the existing `milky_engine_request`. No new C functions.
-- `shown` is every result path in display order at the moment of the action;
+- `shown` is every result ID in display order at the moment of the action;
   `selected` must be one of them. Send `failed` when opening fails. Only send
   after a real interaction.
 - Expect `{"kind":"recorded"}`. A `bad_request` means the event was malformed
@@ -109,11 +137,11 @@ events and durable usage history". Swift-side summary:
 - Recorded launches reorder results immediately: usage breaks ties within a
   match kind (shared DECISIONS 2026-10-08). Result order still comes only from Rust.
 
-- **Swift side wired 2026-10-08.** After each real open attempt, the launcher
+- **Swift side wired 2026-10-08.** After each real action attempt, the launcher
   sends the query, displayed result IDs in order, selected ID, and `opened` or
   `failed` outcome through `RustSearchProvider`. Fixture mode has no recorder.
   The durable call runs asynchronously after the open attempt; errors are
-  intentionally ignored and cannot delay launch or change the UI. The adapter
+  intentionally ignored and cannot delay opening or change the UI. The adapter
   accepts only `recorded` and surfaces malformed/error responses to the caller.
 
 ## Verified Swift adapter — 2026-09-13
@@ -125,18 +153,20 @@ events and durable usage history". Swift-side summary:
   The contract permits concurrency; this adapter does not require it. Existing
   presentation generations still discard obsolete responses.
 - Every foreign response is copied into Data, freed with `defer`, then decoded.
-  Order and display names come directly from Rust; path is stable identity.
-  Relative/NUL-containing paths, duplicate IDs, mismatched query echoes, unknown
-  reply kinds, and invalid JSON fail visibly rather than becoming zero results.
+  Result IDs, kinds, titles, subtitles, actions, and order come from Rust.
+  Invalid app paths, malformed setting URLs, mismatched app actions, duplicate
+  IDs, mismatched query echoes, unknown reply kinds, and invalid JSON fail
+  visibly rather than becoming zero results.
 - App termination cancels presentation work and awaits actor shutdown before
   replying to AppKit's termination request. Engine destruction cannot overlap
   its synchronous request. A shut-down provider cannot recreate an engine.
 - Native launcher links the same Rust archive even in fixture mode, so the
   fixture launch wrapper now also builds Rust (without calling it for searches).
 - Verified real Visual Studio Code and three IDLE results in the running app,
-  real no-match response, and Enter launching Calculator. 12 Swift tests pass,
-  including actual ABI/engine requests, post-free result lifetime, concurrent
-  callers, escaped input, wire errors, unsupported versions, and shutdown.
+  real no-match response, and Enter launching Calculator. Swift bridge tests
+  cover ABI 3, actual engine requests, app and setting decoding, action
+  validation, post-free result lifetime, concurrent callers, escaped input,
+  wire errors, unsupported versions, and shutdown.
 - Selection messages and durable usage persistence were added on 2026-10-08;
   the adapter implementation is documented above. App discovery is still the
   Rust engine's startup snapshot; restart Milky to pick up installed/removed apps.

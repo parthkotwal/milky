@@ -8,12 +8,6 @@ enum LauncherTheme {
     static let title = Font.system(size: 14, weight: .medium)
     static let subtitle = Font.system(size: 12)
     static let hint = Font.system(size: 11, weight: .medium)
-    static func locationLabel(for url: URL) -> String {
-        url.deletingLastPathComponent().standardizedFileURL.pathComponents
-            .filter { $0 != "/" && !$0.isEmpty }
-            .suffix(2)
-            .joined(separator: " › ")
-    }
     static let secondaryTextColor = NSColor(name: nil) { appearance in
         var color = NSColor.labelColor
         appearance.performAsCurrentDrawingAppearance {
@@ -43,7 +37,7 @@ public struct LauncherView: View {
                            enabled: !state.isOpening, up: { state.moveSelection(-1) },
                            down: { state.moveSelection(1) }, submit: open, dismiss: dismiss)
                     .frame(height: 40)
-                    .accessibilityLabel("Search applications")
+                    .accessibilityLabel("Search apps and settings")
                 if state.showsProgress || state.isOpening {
                     ProgressView().controlSize(.small).accessibilityLabel(state.isOpening ? "Opening application" : "Searching")
                 }
@@ -69,7 +63,7 @@ public struct LauncherView: View {
                     Label("Fixtures", systemImage: "testtube.2")
                         .help("Development fixtures only. No Rust search or usage recording.")
                 } else {
-                    Label("Applications", systemImage: "app")
+                    Label("Apps & Settings", systemImage: "square.grid.2x2")
                 }
                 Spacer()
                 Text("↑↓ Navigate")
@@ -87,7 +81,7 @@ public struct LauncherView: View {
         }
         .onChange(of: state.isSearching) { _, searching in
             if !searching, state.results.isEmpty, state.errorMessage == nil, !state.query.isEmpty {
-                announce("No matching applications")
+                announce("No matching results")
             }
         }
     }
@@ -118,7 +112,8 @@ public struct LauncherView: View {
                     if let id { proxy.scrollTo(id, anchor: .center) }
                     if let selected = state.selected,
                        let index = state.results.firstIndex(where: { $0.id == selected.id }) {
-                        announce("\(selected.name), \(selected.url.deletingLastPathComponent().path), result \(index + 1) of \(state.results.count)")
+                        let destination = selected.kind == .app ? selected.accessibilityDestination : selected.kind.rawValue
+                        announce("\(selected.title), \(selected.subtitle), \(destination), result \(index + 1) of \(state.results.count)")
                     }
                 }
                 .onChange(of: state.errorMessage) { _, _ in
@@ -133,10 +128,10 @@ public struct LauncherView: View {
 
     private var emptyTitle: String {
         if state.errorMessage != nil && state.results.isEmpty { return "Search unavailable" }
-        if state.query.isEmpty { return fixtures ? "Search fixture applications" : "Search applications" }
+        if state.query.isEmpty { return fixtures ? "Search fixture results" : "Search apps and settings" }
         if state.isSearching { return state.showsProgress ? "Searching…" : "" }
         if state.errorMessage != nil { return "Search unavailable" }
-        return "No matching applications"
+        return "No matching results"
     }
 
     private var emptySymbol: String {
@@ -151,7 +146,7 @@ public struct LauncherView: View {
         if state.query.isEmpty {
             return fixtures
                 ? "Try Safari, Calendar, or IDLE. Type all to inspect every fixture."
-                : "Type an application name to get started."
+                : "Type an app or setting name to get started."
         }
         return "Try another application name."
     }
@@ -159,10 +154,10 @@ public struct LauncherView: View {
     private func row(_ result: AppResult) -> some View {
         let selected = state.selectedID == result.id
         return HStack(spacing: 12) {
-            AppIcon(url: result.url)
+            ResultIcon(result: result)
             VStack(alignment: .leading, spacing: 3) {
-                Text(result.name).font(LauncherTheme.title).lineLimit(1)
-                Text(LauncherTheme.locationLabel(for: result.url)).font(LauncherTheme.subtitle)
+                Text(result.title).font(LauncherTheme.title).lineLimit(1)
+                Text(result.subtitle).font(LauncherTheme.subtitle)
                     .foregroundStyle(LauncherTheme.secondary).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
@@ -176,9 +171,9 @@ public struct LauncherView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { state.select(result.id); open() }
         .onTapGesture { state.select(result.id) }
-        .help(result.url.path)
+        .help(result.title + " — " + result.accessibilityDestination)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(result.name), \(result.url.path)")
+        .accessibilityLabel("\(result.title), \(result.subtitle), \(result.accessibilityDestination), \(result.kind.rawValue)")
         .accessibilityAddTraits(selected ? [.isSelected, .isButton] : [.isButton])
         .accessibilityAction { state.select(result.id); open() }
         .accessibilityAction(named: "Select") { state.select(result.id) }
@@ -193,16 +188,17 @@ public struct LauncherView: View {
     private func open() { Task { await state.openSelected() } }
 }
 
-private struct AppIcon: View {
-    let url: URL
+private struct ResultIcon: View {
+    let result: AppResult
     @State private var image: NSImage?
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable() }
-            else { Image(systemName: "app.dashed").resizable().padding(5).foregroundStyle(LauncherTheme.secondary) }
+            else { Image(systemName: result.kind == .setting ? "slider.horizontal.3" : "app.dashed").resizable().padding(5).foregroundStyle(LauncherTheme.secondary) }
         }
         .frame(width: 32, height: 32).accessibilityHidden(true)
-        .task(id: url) {
+        .task(id: result.id) {
+            guard let url = result.launchURL else { image = nil; return }
             if let data = await IconCache.shared.data(for: url), !Task.isCancelled {
                 image = NSImage(data: data)
             }
@@ -226,9 +222,9 @@ private struct QueryField: NSViewRepresentable {
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 24)
-        field.placeholderString = "Search applications…"
-        field.setAccessibilityLabel("Search applications")
-        field.setAccessibilityHelp("Type an application name. Use Up and Down to select a result, Return to open, and Escape to close.")
+        field.placeholderString = "Search apps and settings…"
+        field.setAccessibilityLabel("Search apps and settings")
+        field.setAccessibilityHelp("Type an app or setting name. Use Up and Down to select a result, Return to open, and Escape to close.")
         field.delegate = context.coordinator
         return field
     }

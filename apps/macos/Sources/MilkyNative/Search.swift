@@ -1,14 +1,35 @@
 import Foundation
 
+public enum ResultKind: String, Decodable, Sendable { case app, setting }
+
+public enum ResultAction: Equatable, Sendable {
+    case launch(URL)
+    case openURL(URL)
+}
+
 public struct AppResult: Identifiable, Equatable, Sendable {
     public let id: String
-    public let name: String
-    public let url: URL
+    public let kind: ResultKind
+    public let title: String
+    public let subtitle: String
+    public let action: ResultAction
 
-    public init(id: String, name: String, url: URL) {
+    public init(id: String, kind: ResultKind = .app, title: String, subtitle: String = "", action: ResultAction) {
         self.id = id
-        self.name = name
-        self.url = url
+        self.kind = kind
+        self.title = title
+        self.subtitle = subtitle
+        self.action = action
+    }
+
+    public var name: String { title }
+    public var launchURL: URL? {
+        if case .launch(let url) = action { return url }
+        return nil
+    }
+    public var accessibilityDestination: String {
+        if let launchURL { return launchURL.path }
+        return "Open in \(subtitle)"
     }
 }
 
@@ -49,7 +70,8 @@ public struct FixtureSearchProvider: SearchProvider {
         app("Calendar", "/System/Applications/Calendar.app"),
         app("Notes", "/System/Applications/Notes.app"),
         app("TextEdit", "/System/Applications/TextEdit.app"),
-        app("System Settings", "/System/Applications/System Settings.app"),
+        setting("Wi-Fi", "System Settings", "x-apple.systempreferences:com.apple.wifi-settings-extension"),
+        setting("Advanced", "Wi-Fi", "x-apple.systempreferences:com.apple.wifi-settings-extension?Advanced"),
         app("IDLE", "/Applications/Python 3.12/IDLE.app"),
         app("IDLE", "/Applications/Python 3.13/IDLE.app"),
         app("Milky Research — A Very Long Application Name for Layout Inspection", "/tmp/Milky Fixtures/Research/An intentionally long parent directory/Application Previews/Milky Research.app"),
@@ -57,7 +79,11 @@ public struct FixtureSearchProvider: SearchProvider {
     ]
 
     private static func app(_ name: String, _ path: String) -> AppResult {
-        AppResult(id: path, name: name, url: URL(fileURLWithPath: path))
+        AppResult(id: "app:\(path)", title: name, subtitle: URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent, action: .launch(URL(fileURLWithPath: path)))
+    }
+
+    private static func setting(_ title: String, _ subtitle: String, _ url: String) -> AppResult {
+        AppResult(id: "settings:\(title)", kind: .setting, title: title, subtitle: subtitle, action: .openURL(URL(string: url)!))
     }
 
     public func search(query: String) async throws -> [AppResult] {
@@ -65,7 +91,7 @@ public struct FixtureSearchProvider: SearchProvider {
         try await Task.sleep(for: .milliseconds(key == "slow" ? 1200 : 60))
         if key == "error" { throw FixtureError.unavailable }
         if key == "all" || key == "slow" { return Self.results }
-        return Self.results.filter { $0.name.localizedCaseInsensitiveContains(key) }
+        return Self.results.filter { $0.title.localizedCaseInsensitiveContains(key) || $0.subtitle.localizedCaseInsensitiveContains(key) }
     }
 }
 

@@ -9,6 +9,7 @@ pub mod search;
 pub mod storage;
 pub mod settings;
 pub mod usage;
+pub mod candidate;
 
 /// Normalize text for matching: fold case, accents, compatibility forms, and
 /// invisible formatting marks (see [`matching::fold`]), trim, and collapse runs

@@ -165,7 +165,9 @@ pub(crate) fn camel_parts(token: &str) -> Vec<&str> {
 }
 
 /// Fold text for comparison: compatibility decomposition (NFKD), then drop
-/// combining accent marks and invisible formatting characters, then lowercase.
+/// combining accent marks, invisible formatting characters, and dashes, then
+/// lowercase. Dropping dashes makes `wifi`, `wi-fi`, and Apple's `Wi‑Fi` (a
+/// non-breaking hyphen) the same text.
 ///
 /// `"Café"` -> `"cafe"`, `"ﬁle"` -> `"file"`, `"Ｆｕｌｌ"` -> `"full"`. Not full
 /// Unicode case folding: `"ß"` stays `"ß"`. Lenient for some scripts by design,
@@ -173,9 +175,16 @@ pub(crate) fn camel_parts(token: &str) -> Vec<&str> {
 /// dropped, so `"が"` matches `"か"`.
 pub fn fold(text: &str) -> String {
     text.nfkd()
-        .filter(|&c| !is_combining_mark(c) && !is_invisible_format(c))
+        .filter(|&c| !is_combining_mark(c) && !is_invisible_format(c) && !is_dash(c))
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+/// Hyphens and dashes, which people type or omit inconsistently: `-`, the
+/// Unicode hyphens and dashes U+2010 to U+2015 (Apple writes "Wi‑Fi" with
+/// U+2011), and the minus sign.
+fn is_dash(c: char) -> bool {
+    matches!(c, '-' | '\u{2010}'..='\u{2015}' | '\u{2212}')
 }
 
 /// Zero-width and bidirectional formatting characters: present in some app
@@ -413,6 +422,22 @@ mod tests {
                 match_kind("Visual Studio Code", query),
                 "{query}"
             );
+        }
+    }
+
+    #[test]
+    fn dashes_do_not_split_or_block_a_match() {
+        // Apple's "Wi‑Fi" uses U+2011, a non-breaking hyphen.
+        let apple = "Wi\u{2011}Fi";
+        assert_eq!(match_kind(apple, "wifi"), Some(MatchKind::Exact));
+        assert_eq!(match_kind(apple, &crate::normalize_query("wi-fi")), Some(MatchKind::Exact));
+        assert_eq!(match_kind("Wi-Fi MAC Address", "wifi"), Some(MatchKind::Prefix));
+    }
+
+    #[test]
+    fn every_dash_form_folds_away() {
+        for dash in ["-", "\u{2010}", "\u{2011}", "\u{2013}", "\u{2014}", "\u{2212}", "\u{FF0D}"] {
+            assert_eq!(fold(&format!("e{dash}mail")), "email", "{dash:?}");
         }
     }
 }

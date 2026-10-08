@@ -19,7 +19,7 @@ pub struct MilkyEngine {
 /// Version of the C ABI. Bump on any signature or ownership change.
 #[unsafe(no_mangle)]
 pub extern "C" fn milky_abi_version() -> u32 {
-    2
+    3
 }
 
 /// Create an engine, scanning for apps once. Returns null on failure.
@@ -118,8 +118,8 @@ mod tests {
     }
 
     #[test]
-    fn abi_version_is_two() {
-        assert_eq!(milky_abi_version(), 2);
+    fn abi_version_is_three() {
+        assert_eq!(milky_abi_version(), 3);
     }
 
     #[test]
@@ -138,7 +138,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|r| r["name"] == "Terminal")
+                .any(|r| r["title"] == "Terminal")
         );
         unsafe { milky_engine_free(engine) };
     }

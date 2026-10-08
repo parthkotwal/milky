@@ -40,7 +40,8 @@ pub struct Usage {
 /// Usage history for every app we have seen launched.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct UsageStore {
-    entries: HashMap<PathBuf, Usage>,
+    /// Keyed by result ID (`app:/Applications/Safari.app`, `settings:...`).
+    entries: HashMap<String, Usage>,
 }
 
 impl UsageStore {
@@ -57,10 +58,10 @@ impl UsageStore {
         self.len() == 0
     }
 
-    /// Record that `path` was launched at `now`.
-    pub fn record_launch(&mut self, path: &Path, now: SystemTime) {
+    /// Record that the result `id` was launched at `now`.
+    pub fn record_launch(&mut self, id: &str, now: SystemTime) {
         self.entries
-            .entry(path.to_path_buf())
+            .entry(id.to_string())
             .and_modify(|usage| {
                 let elapsed = now
                     .duration_since(usage.last_updated)
@@ -76,9 +77,9 @@ impl UsageStore {
             });
     }
 
-    /// Decayed score for `path` as of `now`. Zero if never launched.
-    pub fn score(&self, path: &Path, now: SystemTime) -> f64 {
-        match self.entries.get(path) {
+    /// Decayed score for the result `id` as of `now`. Zero if never launched.
+    pub fn score(&self, id: &str, now: SystemTime) -> f64 {
+        match self.entries.get(id) {
             Some(usage) => {
                 let elapsed = now
                     .duration_since(usage.last_updated)
@@ -103,7 +104,25 @@ impl UsageStore {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Self::new()),
             Err(err) => return Err(err.into()),
         };
-        Ok(serde_json::from_str(&text)?)
+        let mut store: Self = serde_json::from_str(&text)?;
+        store.migrate_path_keys();
+        Ok(store)
+    }
+
+    /// History written before results had IDs (contract v2) is keyed by bare
+    /// app paths. Rewrite those keys as app IDs so nothing recorded is lost.
+    fn migrate_path_keys(&mut self) {
+        let old: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|key| key.starts_with('/'))
+            .cloned()
+            .collect();
+        for path in old {
+            if let Some(usage) = self.entries.remove(&path) {
+                self.entries.entry(format!("app:{path}")).or_insert(usage);
+            }
+        }
     }
 
     /// Load history, or start empty without destroying a damaged file.
@@ -150,8 +169,8 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
     }
 
-    fn app() -> PathBuf {
-        PathBuf::from("/Applications/Safari.app")
+    fn app() -> String {
+        "app:/Applications/Safari.app".to_string()
     }
 
     const DAY: u64 = 24 * 60 * 60;
@@ -188,24 +207,24 @@ mod tests {
     #[test]
     fn recent_use_beats_stale_use() {
         let mut store = UsageStore::new();
-        let daily = PathBuf::from("/Applications/Daily.app");
-        let abandoned = PathBuf::from("/Applications/Abandoned.app");
+        let daily = "app:/Applications/Daily.app";
+        let abandoned = "app:/Applications/Abandoned.app";
 
         // Abandoned: twenty launches, a year ago.
         for _ in 0..20 {
-            store.record_launch(&abandoned, at(0));
+            store.record_launch(abandoned, at(0));
         }
         // Daily: three launches, this week.
         let now = at(365 * DAY);
         for day in 0..3 {
-            store.record_launch(&daily, at(365 * DAY - day * DAY));
+            store.record_launch(daily, at(365 * DAY - day * DAY));
         }
 
         assert!(
-            store.score(&daily, now) > store.score(&abandoned, now),
+            store.score(daily, now) > store.score(abandoned, now),
             "daily {} should beat abandoned {}",
-            store.score(&daily, now),
-            store.score(&abandoned, now)
+            store.score(daily, now),
+            store.score(abandoned, now)
         );
     }
 
@@ -224,7 +243,7 @@ mod tests {
         store.record_launch(&app(), at(0));
         store.record_launch(&app(), at(0));
         assert_eq!(store.len(), 1);
-        store.record_launch(Path::new("/Applications/Other.app"), at(0));
+        store.record_launch("app:/Applications/Other.app", at(0));
         assert_eq!(store.len(), 2);
     }
 
@@ -302,7 +321,7 @@ mod tests {
         let mut store = UsageStore::new();
         store.record_launch(&app(), at(0));
         store.save(&path).expect("first save");
-        store.record_launch(Path::new("/Applications/Other.app"), at(0));
+        store.record_launch("app:/Applications/Other.app", at(0));
         store.save(&path).expect("second save");
 
         assert_eq!(UsageStore::load(&path).unwrap().len(), 2);
@@ -337,5 +356,21 @@ mod tests {
         let (store, err) = UsageStore::load_or_quarantine(&path, at(0));
         assert!(store.is_empty());
         assert!(err.is_none());
+    }
+
+    #[test]
+    fn path_keys_from_contract_v2_migrate_to_app_ids() {
+        let path = temp_path("migrate");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"entries":{"/Applications/Safari.app":{"score":2.0,"last_updated":{"secs_since_epoch":0,"nanos_since_epoch":0},"launches":2}}}"#,
+        )
+        .unwrap();
+        let loaded = UsageStore::load(&path).expect("load");
+        assert!((loaded.score("app:/Applications/Safari.app", at(0)) - 2.0).abs() < 1e-9);
+        assert_eq!(loaded.score("/Applications/Safari.app", at(0)), 0.0);
+        assert_eq!(loaded.len(), 1);
+        cleanup(&path);
     }
 }

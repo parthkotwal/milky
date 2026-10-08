@@ -53,8 +53,7 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
     }
 
     static func validateVersion(_ actual: UInt32) throws {
-        // This adapter implements the v2 JSON contract, even if a future header changes.
-        guard actual == 2 else { throw BridgeError.version(actual) }
+        guard actual == 3 else { throw BridgeError.version(actual) }
     }
 
     static func decode(_ data: Data, expectedQuery: String) throws -> [AppResult] {
@@ -68,9 +67,25 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
                 guard reply.query == expectedQuery, let results = reply.results else { throw BridgeError.invalidResponse }
                 var identities = Set<String>()
                 return try results.map { result in
-                    guard result.path.hasPrefix("/"), !result.path.contains("\0"),
-                          identities.insert(result.path).inserted else { throw BridgeError.invalidResponse }
-                    return AppResult(id: result.path, name: result.name, url: URL(fileURLWithPath: result.path))
+                    guard !result.id.isEmpty, !result.id.contains("\0"), identities.insert(result.id).inserted else {
+                        throw BridgeError.invalidResponse
+                    }
+                    let action: ResultAction
+                    switch (result.kind, result.action) {
+                    case (.app, .launch(let path)):
+                        guard path.hasPrefix("/"), !path.contains("\0"), result.id == "app:\(path)" else {
+                            throw BridgeError.invalidResponse
+                        }
+                        action = .launch(URL(fileURLWithPath: path))
+                    case (.setting, .openURL(let text)):
+                        guard let url = URL(string: text), let scheme = url.scheme, !scheme.isEmpty else {
+                            throw BridgeError.invalidResponse
+                        }
+                        action = .openURL(url)
+                    default: throw BridgeError.invalidResponse
+                    }
+                    return AppResult(id: result.id, kind: result.kind, title: result.title,
+                                     subtitle: result.subtitle, action: action)
                 }
             default: throw BridgeError.invalidResponse
             }
@@ -109,9 +124,28 @@ private struct Reply: Decodable {
     let message: String?
 
     struct Item: Decodable {
-        let path: String
-        let name: String
+        let id: String
+        let kind: ResultKind
+        let title: String
+        let subtitle: String
+        let action: WireAction
         // Match kind is deliberately not interpreted by the UI; Rust owns order.
+    }
+}
+
+private enum WireAction: Decodable {
+    case launch(String)
+    case openURL(String)
+
+    private enum CodingKeys: String, CodingKey { case type, path, url }
+    private enum ActionType: String, Decodable { case launch, openURL = "open_url" }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        switch try values.decode(ActionType.self, forKey: .type) {
+        case .launch: self = .launch(try values.decode(String.self, forKey: .path))
+        case .openURL: self = .openURL(try values.decode(String.self, forKey: .url))
+        }
     }
 }
 

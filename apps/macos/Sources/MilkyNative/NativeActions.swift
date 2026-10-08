@@ -5,22 +5,33 @@ public final class NativeAppOpener: AppOpening {
     public init() {}
 
     public func open(_ result: AppResult) async throws {
-        if let running = NSWorkspace.shared.runningApplications.first(where: {
-            $0.bundleURL?.standardizedFileURL == result.url.standardizedFileURL
-        }) {
-            guard running.activate(options: [.activateAllWindows]) else {
-                throw OpenError.activationFailed
+        switch result.action {
+        case .openURL(let url):
+            guard NSWorkspace.shared.open(url) else { throw OpenError.openFailed }
+        case .launch(let url):
+            if let running = NSWorkspace.shared.runningApplications.first(where: {
+                $0.bundleURL?.standardizedFileURL == url.standardizedFileURL
+            }) {
+                guard running.activate(options: [.activateAllWindows]) else {
+                    throw OpenError.activationFailed
+                }
+                return
             }
-            return
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            _ = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
         }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        _ = try await NSWorkspace.shared.openApplication(at: result.url, configuration: configuration)
     }
 
     private enum OpenError: LocalizedError {
         case activationFailed
-        var errorDescription: String? { "The application could not be activated. Try opening it from Finder." }
+        case openFailed
+        var errorDescription: String? {
+            switch self {
+            case .activationFailed: "The application could not be activated. Try opening it from Finder."
+            case .openFailed: "The destination could not be opened. Try opening it from System Settings."
+            }
+        }
     }
 }
 

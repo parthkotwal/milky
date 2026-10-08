@@ -404,6 +404,63 @@ Consequences:
   for some scripts: Japanese voiced marks are dropped, so `が` matches `か`.
 - camelCase words can add mild extra word-prefix matches (`app` matches
   WhatsApp), which rank below true prefix matches.
+- Dashes are dropped when folding (added 2026-10-08), so `wifi`, `wi-fi`, and
+  Apple's `Wi‑Fi` (U+2011) are the same text.
 - `libmilky_ffi.a` now depends on the CoreFoundation framework (and, since
   settings discovery, IOKit); every consumer must link them. The `CMilkyFFI`
   module map declares both, so Swift targets get them automatically.
+
+---
+
+## 2026-10-08 — Results carry a kind, an action, and a destination ID (contract v3)
+
+Status: accepted by the user. Rust side implemented 2026-10-08
+(`milky_abi_version()` = 3); Swift adapter not yet on v3.
+
+Decision:
+
+- Identity names the destination, not the text:
+  `app:/Applications/Safari.app`, `settings:<pane bundle id>`,
+  `settings:<pane bundle id>#<section anchor>`.
+- One result per destination. A destination answers to several names (Wi-Fi's
+  `Advanced` section is reached by "Advanced", "Wi‑Fi MAC Address", ...); the
+  result shows whichever name matched best. A section item titled exactly like
+  its pane is covered by the pane result.
+- Wire shape of a result, replacing `path` and `name`:
+
+```text
+{"id":"settings:com.apple.Network-Settings.extension#802.1X",
+ "kind":"setting",
+ "title":"802.1X certificate",
+ "subtitle":"Network",
+ "action":{"type":"open_url","url":"x-apple.systempreferences:com.apple.Network-Settings.extension?802.1X"},
+ "match_kind":"prefix"}
+apps: "kind":"app", "action":{"type":"launch","path":"/Applications/..."}
+```
+
+- Subtitles: a section shows its pane name; a pane shows "System Settings"; an
+  app shows its folder ("Python 3.12" — which disambiguates the three IDLEs).
+- `record_selection` `shown` and `selected` carry result IDs. Event log records
+  move to version 2; version-1 lines (paths) remain readable.
+- Usage history is keyed by ID. Existing path keys migrate on load to
+  `app:<path>`; nothing is discarded.
+- Apps and settings rank together by the existing rules. Settings match pane
+  names and section titles; keywords come later.
+- Breaking change, so the version reported by `milky_abi_version()` moves from
+  2 to 3; it covers the message format as well as the C signatures.
+
+Why:
+
+Measured on this Mac: 711 settings items lead to 561 destinations; 62
+destinations are reached by several items (Menu Bar `?tutorial` by 21). Usage
+should attach to where the user went, not which of its titles they typed, and
+the Swift adapter rejects duplicate IDs within a response. Additive fields were
+considered and rejected: settings have no path, so an old adapter would fail on
+them anyway, and a clean version bump is caught by the existing startup check.
+
+Consequences:
+
+- Between the Rust change landing and the Swift adapter adopting v3, a rebuilt
+  launcher refuses to search (version mismatch). Do not rebuild the daily
+  launcher until both sides are on v3.
+

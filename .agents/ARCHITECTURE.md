@@ -54,9 +54,11 @@ append to `events.jsonl` and update `usage.json` (decayed launch scores) under a
 `Mutex` in the engine, in `~/Library/Application Support/Milky/`. Usage breaks
 ties within a match kind; it never outranks a stronger match.
 `settings.rs` reads System Settings panes and their sections (51 panes, 711
-items, deep links verified); not yet part of search. Apps carry Finder's display names and a precomputed matching key (folded,
-split on whitespace and camelCase). Measured: ~23 ms to index 127 apps
-(display-name lookups dominate), ~5-13 us per query.
+items, deep links verified). `candidate.rs` turns apps and settings into one
+list of destinations (127 apps, 606 settings) with IDs, subtitles, and actions;
+search ranks them together. Apps carry Finder's display names and a precomputed matching key (folded,
+split on whitespace and camelCase). Measured: ~90 ms to index 127 apps and 606
+settings destinations, ~40-50 us per query.
 
 ## Runtime components
 
@@ -94,7 +96,7 @@ Responsibilities:
 
 The current integration uses an in-process Rust static library, a handwritten
 C header, and a SwiftPM system-library target. The engine/search contract (DECISIONS
-2026-09-13) is implemented at ABI version 2: five C functions, JSON
+2026-09-13) is implemented, now at ABI version 3 (contract v3): five C functions, JSON
 request/response messages through `Engine::handle_json`, and concurrent calls
 allowed. Swift search and selection-event adapters use the same boundary.
 Selection events are stored locally by the Rust engine. Swift-side coordination lives in

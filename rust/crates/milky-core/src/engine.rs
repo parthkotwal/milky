@@ -14,26 +14,29 @@ use crate::api::{
 };
 use crate::apps;
 use crate::normalize_query;
-use crate::search::{AppMatch, search_apps};
+use crate::candidate::{self, Candidate, Kind};
+use crate::search::{self, Hit};
+use crate::settings;
 
 /// A warm search engine.
 ///
-/// Scanning for apps costs about 1.6 ms, far too much per keystroke, so the
-/// scan happens once here and the result is held. The field is private: the
-/// only way to change the index is [`Engine::reindex`].
+/// Discovering apps (about 23 ms) and System Settings (about 40 ms) is far too
+/// slow to repeat per keystroke, so it happens once here and the candidates are
+/// held. The field is private: the only way to change the index is
+/// [`Engine::reindex`].
 pub struct Engine {
-    apps: Vec<apps::App>,
+    candidates: Vec<Candidate>,
     usage: Mutex<UsageStore>,
     usage_path: PathBuf,
     events_path: PathBuf,
 }
 
-// `Default` implies a cheap, obvious value, and `new` does about 1.6 ms of disk
+// `Default` implies a cheap, obvious value, and `new` does about 60 ms of disk
 // I/O. It is also heading for `new(config) -> Result<Self, _>`, at which point a
 // `Default` impl could not exist. Not worth adding to delete.
 #[allow(clippy::new_without_default)]
 impl Engine {
-    /// Build an engine, scanning for installed apps once.
+    /// Build an engine, discovering installed apps and System Settings once.
     pub fn new() -> Self {
         let dir = storage::data_dir().unwrap_or_else(|_| std::env::temp_dir().join("Milky"));
         Self::with_data_dir(&dir)
@@ -44,7 +47,7 @@ impl Engine {
         let events_path = dir.join(events::FILE_NAME);
         let (store, _damaged) = UsageStore::load_or_quarantine(&usage_path, SystemTime::now());
         Self {
-            apps: apps::discover_apps(),
+            candidates: discover_candidates(),
             usage: Mutex::new(store),
             usage_path,
             events_path,
@@ -53,27 +56,34 @@ impl Engine {
 
     /// How many apps are currently indexed.
     pub fn app_count(&self) -> usize {
-        self.apps.len()
+        self.count(Kind::App)
+    }
+
+    /// How many System Settings panes and sections are currently indexed.
+    pub fn settings_count(&self) -> usize {
+        self.count(Kind::Setting)
+    }
+
+    fn count(&self, kind: Kind) -> usize {
+        self.candidates.iter().filter(|candidate| candidate.kind == kind).count()
     }
 
     /// Search the index, best results first.
     ///
     /// Takes raw user input and normalizes it, so callers do not have to know
     /// that the matching layer expects a normalized query.
-    pub fn search(&self, query: &str, limit: usize) -> Vec<AppMatch> {
+    pub fn search(&self, query: &str, limit: usize) -> Vec<Hit<'_>> {
         let normalized = normalize_query(query);
         let now = SystemTime::now();
         let store = self.lock_usage();
-        search_apps(&self.apps, &normalized, limit, |path| {
-            store.score(path, now)
-        })
+        search::search(&self.candidates, &normalized, limit, |id| store.score(id, now))
     }
 
-    /// Re-scan for installed apps, replacing the index.
+    /// Re-discover apps and System Settings, replacing the index.
     ///
     /// Takes `&mut self` because it replaces state no reader may be holding.
     pub fn reindex(&mut self) {
-        self.apps = apps::discover_apps();
+        self.candidates = discover_candidates();
     }
 
     fn lock_usage(&self) -> MutexGuard<'_, UsageStore> {
@@ -82,8 +92,9 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn usage_score(&self, path: &Path, now: SystemTime) -> f64 {
-        self.lock_usage().score(path, now)
+    /// Current usage score for the result `id`.
+    pub fn usage_score(&self, id: &str, now: SystemTime) -> f64 {
+        self.lock_usage().score(id, now)
     }
 
     fn record_selection(&self, event: SelectionEvent, now: SystemTime) -> Response {
@@ -101,7 +112,7 @@ impl Engine {
             });
         }
         if event.outcome == Outcome::Opened {
-            store.record_launch(Path::new(&event.selected), now);
+            store.record_launch(&event.selected, now);
         }
         if let Err(err) = store.save(&self.usage_path) {
             return Response::Error(ErrorResponse {
@@ -140,12 +151,18 @@ impl Engine {
     }
 }
 
+/// Every destination search can return: installed apps, then System Settings
+/// panes and sections.
+fn discover_candidates() -> Vec<Candidate> {
+    candidate::build(&apps::discover_apps(), &settings::discover_settings())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn names(matches: &[AppMatch]) -> Vec<&str> {
-        matches.iter().map(|m| m.name.as_str()).collect()
+    fn names<'a>(hits: &[Hit<'a>]) -> Vec<&'a str> {
+        hits.iter().map(|hit| hit.title).collect()
     }
 
     #[test]
@@ -159,7 +176,7 @@ mod tests {
         let engine = Engine::new();
         let found = engine.search("term", 10);
         assert!(
-            found.iter().any(|m| m.name == "Terminal"),
+            found.iter().any(|hit| hit.title == "Terminal"),
             "got {:?}",
             names(&found)
         );
@@ -167,12 +184,12 @@ mod tests {
 
     #[test]
     fn engine_normalizes_raw_user_input() {
-        // Capitals and stray whitespace, as actually typed. `search_apps` alone
+        // Capitals and stray whitespace, as actually typed. `search::search` alone
         // would return nothing for this.
         let engine = Engine::new();
         let found = engine.search("  TERM  ", 10);
         assert!(
-            found.iter().any(|m| m.name == "Terminal"),
+            found.iter().any(|hit| hit.title == "Terminal"),
             "got {:?}",
             names(&found)
         );
@@ -206,13 +223,14 @@ mod tests {
         let results = v["results"].as_array().unwrap();
         let terminal = results
             .iter()
-            .find(|r| r["name"] == "Terminal")
+            .find(|r| r["title"] == "Terminal")
             .expect("Terminal");
         assert_eq!(terminal["match_kind"], "prefix");
-        assert_eq!(
-            terminal["path"],
-            "/System/Applications/Utilities/Terminal.app"
-        );
+        assert_eq!(terminal["id"], "app:/System/Applications/Utilities/Terminal.app");
+        assert_eq!(terminal["kind"], "app");
+        assert_eq!(terminal["subtitle"], "Utilities");
+        assert_eq!(terminal["action"]["type"], "launch");
+        assert_eq!(terminal["action"]["path"], "/System/Applications/Utilities/Terminal.app");
     }
 
     #[test]
@@ -260,7 +278,7 @@ mod tests {
         assert_eq!(raw.matches(r#""kind""#).count(), 1, "got {raw}");
     }
 
-    const SAFARI: &str = "/Applications/Safari.app";
+    const SAFARI: &str = "app:/Applications/Safari.app";
 
     fn temp_data_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("milky-engine-{label}-{}", std::process::id()))
@@ -268,7 +286,7 @@ mod tests {
 
     fn selection_json(outcome: &str) -> String {
         format!(
-            r#"{{"op":"record_selection","query":"saf","shown":["{SAFARI}","/System/Applications/Calendar.app"],"selected":"{SAFARI}","outcome":"{outcome}"}}"#
+            r#"{{"op":"record_selection","query":"saf","shown":["{SAFARI}","app:/System/Applications/Calendar.app"],"selected":"{SAFARI}","outcome":"{outcome}"}}"#
         )
     }
 
@@ -283,7 +301,7 @@ mod tests {
         let dir = temp_data_dir("opened");
         let engine = Engine::with_data_dir(&dir);
         assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
-        assert!(engine.usage_score(Path::new(SAFARI), SystemTime::now()) > 0.99);
+        assert!(engine.usage_score(SAFARI, SystemTime::now()) > 0.99);
         assert_eq!(log_lines(&dir).len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -294,7 +312,7 @@ mod tests {
         let engine = Engine::with_data_dir(&dir);
         assert_eq!(ask(&engine, &selection_json("failed"))["kind"], "recorded");
         assert_eq!(
-            engine.usage_score(Path::new(SAFARI), SystemTime::now()),
+            engine.usage_score(SAFARI, SystemTime::now()),
             0.0
         );
         let lines = log_lines(&dir);
@@ -311,7 +329,7 @@ mod tests {
             assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
         }
         let reopened = Engine::with_data_dir(&dir);
-        assert!(reopened.usage_score(Path::new(SAFARI), SystemTime::now()) > 0.99);
+        assert!(reopened.usage_score(SAFARI, SystemTime::now()) > 0.99);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -321,7 +339,7 @@ mod tests {
         let engine = Engine::with_data_dir(&dir);
         let v = ask(
             &engine,
-            r#"{"op":"record_selection","query":"x","shown":["/A.app"],"selected":"/B.app","outcome":"opened"}"#,
+            r#"{"op":"record_selection","query":"x","shown":["app:/A.app"],"selected":"app:/B.app","outcome":"opened"}"#,
         );
         assert_eq!(v["reason"], "bad_request");
         assert!(!dir.join(usage::FILE_NAME).exists());
@@ -342,7 +360,7 @@ mod tests {
             }
         });
         assert_eq!(log_lines(&dir).len(), 40);
-        let score = engine.usage_score(Path::new(SAFARI), SystemTime::now());
+        let score = engine.usage_score(SAFARI, SystemTime::now());
         assert!(score > 39.9 && score <= 40.0, "score {score}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -373,18 +391,51 @@ mod tests {
             engine
                 .search("c", 50)
                 .iter()
-                .position(|m| m.name == name)
+                .position(|hit| hit.title == name)
                 .expect(name)
         };
         // With no history, the shorter name wins the tie.
         assert!(position("Chess") < position("Calendar"));
 
         let pick_calendar = r#"{"op":"record_selection","query":"c",
-            "shown":["/System/Applications/Chess.app","/System/Applications/Calendar.app"],
-            "selected":"/System/Applications/Calendar.app","outcome":"opened"}"#;
+            "shown":["app:/System/Applications/Chess.app","app:/System/Applications/Calendar.app"],
+            "selected":"app:/System/Applications/Calendar.app","outcome":"opened"}"#;
         assert_eq!(ask(&engine, pick_calendar)["kind"], "recorded");
 
         assert!(position("Calendar") < position("Chess"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settings_are_indexed_and_searchable() {
+        let engine = Engine::new();
+        assert!(engine.settings_count() > 500, "only {} settings", engine.settings_count());
+        let v = ask(&engine, r#"{"op":"search","query":"night shift","limit":5}"#);
+        let night_shift = v["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "settings:com.apple.Displays-Settings.extension#nightShiftSection")
+            .expect("night shift result");
+        assert_eq!(night_shift["kind"], "setting");
+        assert_eq!(night_shift["subtitle"], "Displays");
+        assert_eq!(night_shift["action"]["type"], "open_url");
+        assert_eq!(
+            night_shift["action"]["url"],
+            "x-apple.systempreferences:com.apple.Displays-Settings.extension?nightShiftSection"
+        );
+    }
+
+    #[test]
+    fn a_settings_selection_counts_by_its_id() {
+        let dir = temp_data_dir("settings-selection");
+        let engine = Engine::with_data_dir(&dir);
+        let id = "settings:com.apple.Displays-Settings.extension#nightShiftSection";
+        let event = format!(
+            r#"{{"op":"record_selection","query":"night","shown":["{id}"],"selected":"{id}","outcome":"opened"}}"#
+        );
+        assert_eq!(ask(&engine, &event)["kind"], "recorded");
+        assert!(engine.usage_score(id, SystemTime::now()) > 0.99);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
