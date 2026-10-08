@@ -81,16 +81,45 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 - [ ] Semantic text retrieval.
 - [ ] System Settings source: panes *and the sections inside them*, the way
       Spotlight finds "Bluetooth", "Night Shift", or "Camera" (privacy). Raised by
-      the user 2026-10-08 as critical for daily use. Findings that day:
-      51 panes are app extensions with extension point
-      `com.apple.Settings.extension.ui` in
-      `/System/Library/ExtensionKit/Extensions`; their bundle IDs work in
-      `x-apple.systempreferences:<id>` deep links. `Info.plist` display names are
-      unreliable (`AccessibilitySettingsExtension`), the same trap as app names.
-      Apple ships per-language `.searchTerms` keyword files inside the panes
-      (852 found); likely the source for sections and synonyms ("dark mode" ->
-      Appearance). First non-app result, so it forces the result model to carry
-      a kind and an action (open URL vs launch).
+      the user 2026-10-08 as critical for daily use; agreed to come before files.
+      Measured 2026-10-08 on macOS 26:
+      - 51 panes in `/System/Library/ExtensionKit/Extensions` with extension
+        point `com.apple.Settings.extension.ui`. `Info.plist` →
+        `EXAppExtensionAttributes.SettingsExtensionAttributes` carries
+        `allowsXAppleSystemPreferencesURLScheme`, `searchTermsFileName`,
+        `legacyBundleIdentifier`, and sometimes `presentsInSidebar: false`.
+      - 47 panes ship `en.lproj/<name>.searchTerms` (XML plist): 563 sections
+        keyed by anchor, 711 titled entries, 3,520 keywords. Anchors match
+        deep-link anchors (`Privacy_Camera`). "Night Shift" →
+        `nightShiftSection` in Displays.
+      - Pane names: neither `Info.plist` nor LaunchServices is right for all
+        (LaunchServices returns `Date & Time.appex` but also `DisplaysExt.appex`).
+        Sidebar names are localization keys (`ENERGY_SAVER_PREF_TITLE`), some
+        hardware-dependent (Battery vs Energy). Unresolved.
+      - Verified 2026-10-08 on macOS 26, by screenshot after each `open`:
+        `x-apple.systempreferences:<pane bundle id>?<searchTerms anchor>` opens
+        the exact section. The pane's own `CFBundleIdentifier` works; the
+        legacy ID is not needed. `com.apple.preference.security?Privacy_Camera`
+        → Camera list; `com.apple.Displays-Settings.extension?nightShiftSection`
+        → Night Shift panel; `com.apple.wifi-settings-extension?Advanced` →
+        Advanced panel. Some sections open as a sheet over the pane. A link sent
+        while a sheet is closing can be ignored.
+      - Identity: settings have no file path. The usage store and
+        `record_selection` validation assume absolute paths; both must move to
+        stable IDs.
+      - Punctuation: Apple writes "Wi‑Fi" with U+2011. `wifi` only matches as a
+        subsequence and `wi-fi` not at all; hyphens need folding.
+      Step 1 done 2026-10-08 (`settings.rs`, `milky --settings`): 51 panes,
+      711 items. Names: hardware-dependent sidebar key (power source checked via
+      IOKit; Touch ID and Apple Intelligence assumed present), else
+      `InfoPlist.loctable` `en`, else `Info.plist`, else cleaned identifier.
+      ~40 ms warm at startup (Info.plist scan 16 ms, loctables 19 ms, terms
+      6 ms); cacheable by OS version if it ever matters. Not yet searchable.
+      Known gaps: "AutoFill & Passwords" (shown under General) is not a pane and
+      is not in any search-terms file; General itself has no items; panes hidden
+      by hardware (Mouse without a mouse, Classroom) are still listed;
+      Accessibility is 342 of 711 items, so keyword matches must not flood
+      results; English only.
 - [ ] System actions (sleep, lock, empty trash, etc.).
 - [ ] Web-search fallback.
 - [x] Usage-history persistence.

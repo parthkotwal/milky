@@ -77,9 +77,9 @@ learning-first). Swift adapter and linking — Swift owner.
   identity, are unchanged.
 - `milky_engine_new` takes about 23 ms longer: display-name lookups for ~127
   apps. Keep creating the engine off the main thread.
-- `libmilky_ffi.a` now needs CoreFoundation. The core owner added
-  `link framework "CoreFoundation"` to `Sources/CMilkyFFI/module.modulemap`, so
-  every target importing `CMilkyFFI` links it automatically. Verified with
+- `libmilky_ffi.a` now needs CoreFoundation and IOKit. The core owner added
+  `link framework` lines for both to `Sources/CMilkyFFI/module.modulemap`, so
+  every target importing `CMilkyFFI` links them automatically. Verified with
   `scripts/build.sh test`: 21 Swift tests pass; `milky-probe` reports ABI 2.
 - Matching is now accent-insensitive and camelCase-aware. Result order still
   comes entirely from Rust; no Swift change is required.

@@ -143,7 +143,7 @@ pub fn word_initials(name: &str) -> String {
 /// (`ColorSync` -> `Color`, `Sync`; `iMovie` -> `i`, `Movie`), and before the
 /// last capital of an uppercase run followed by lowercase (`PDFExpert` ->
 /// `PDF`, `Expert`). All-caps tokens stay whole (`VLC`).
-fn camel_parts(token: &str) -> Vec<&str> {
+pub(crate) fn camel_parts(token: &str) -> Vec<&str> {
     let chars: Vec<(usize, char)> = token.char_indices().collect();
     let mut parts = Vec::new();
     let mut start = 0;

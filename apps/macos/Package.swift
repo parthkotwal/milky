@@ -13,6 +13,7 @@ let package = Package(
         .target(name: "MilkyNative"),
         .target(name: "MilkyRust", dependencies: ["MilkyNative", "CMilkyFFI"], linkerSettings: rustLinkerSettings),
         .executableTarget(name: "milky-launcher", dependencies: ["MilkyNative", "MilkyRust"]),
+        .executableTarget(name: "milky-snapshot", dependencies: ["MilkyNative"]),
         .testTarget(name: "MilkyRustTests", dependencies: ["MilkyRust"]),
         .testTarget(name: "MilkyNativeTests", dependencies: ["MilkyNative"]),
         // The raw C ABI.

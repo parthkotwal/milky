@@ -404,6 +404,6 @@ Consequences:
   for some scripts: Japanese voiced marks are dropped, so `が` matches `か`.
 - camelCase words can add mild extra word-prefix matches (`app` matches
   WhatsApp), which rank below true prefix matches.
-- `libmilky_ffi.a` now depends on the CoreFoundation framework; every consumer
-  must link it. The `CMilkyFFI` module map declares it, so Swift targets get it
-  automatically.
+- `libmilky_ffi.a` now depends on the CoreFoundation framework (and, since
+  settings discovery, IOKit); every consumer must link them. The `CMilkyFFI`
+  module map declares both, so Swift targets get them automatically.

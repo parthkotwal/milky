@@ -52,7 +52,9 @@ interactive mode against one warm engine. `milky-ffi` exposes the
 five-function ABI; `api.rs` holds the wire types. `record_selection` messages
 append to `events.jsonl` and update `usage.json` (decayed launch scores) under a
 `Mutex` in the engine, in `~/Library/Application Support/Milky/`. Usage breaks
-ties within a match kind; it never outranks a stronger match. Apps carry Finder's display names and a precomputed matching key (folded,
+ties within a match kind; it never outranks a stronger match.
+`settings.rs` reads System Settings panes and their sections (51 panes, 711
+items, deep links verified); not yet part of search. Apps carry Finder's display names and a precomputed matching key (folded,
 split on whitespace and camelCase). Measured: ~23 ms to index 127 apps
 (display-name lookups dominate), ~5-13 us per query.
 

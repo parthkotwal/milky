@@ -78,6 +78,20 @@ Real mode does not treat those words as fixture commands. Enter opens real app
 URLs in either mode. Selection events are saved only in real Rust mode; fixture
 mode never writes usage history.
 
+To inspect a launcher state without activating a window or taking keyboard
+focus, render an offscreen PNG:
+
+```sh
+apps/macos/scripts/snapshot.sh --query all --appearance dark --output /tmp/milky-all.png
+apps/macos/scripts/snapshot.sh --query zzzz --appearance light --output /tmp/milky-empty.png
+apps/macos/scripts/snapshot.sh --query slow --during-search --output /tmp/milky-loading.png
+```
+
+The snapshot executable uses explicit fixtures, never opens results or records
+usage, and verifies the foreground app is unchanged. Generated images default
+to the ignored `apps/macos/.build/snapshots/` directory when `--output` is not
+provided.
+
 ## QA evidence — 2026-09-14 — Invocation and accessibility pass
 
 - The user physically ran two Control–Option–Space → type → Escape cycles from
@@ -125,6 +139,18 @@ to the implemented invocation behavior.
   slower searches receive an explicit searching presentation after the delay.
 - `apps/macos/scripts/build.sh test` passes 21 tests, including location-label
   formatting and the existing light/dark contrast checks.
+
+## QA evidence — 2026-10-08 — Offscreen snapshot harness
+
+- `apps/macos/scripts/snapshot.sh --query all --appearance dark` rendered a
+  2× PNG without changing the frontmost process. The snapshot uses fixture
+  search and a non-activating AppKit policy; it does not show a window or
+  require a real app launch.
+- Available visual states are controlled by `--query`: omit for the empty
+  prompt, use `all` for a populated list, `zzzz` for no matches, and `error`
+  for the fixture error state. `--query slow --during-search` captures the
+  delayed loading state. `--appearance light|dark` and `--output PATH` select
+  appearance and destination.
 
 ## QA evidence — 2026-09-13
 

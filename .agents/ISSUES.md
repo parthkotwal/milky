@@ -225,6 +225,34 @@ and make sure the module map covers it:
 cargo rustc --manifest-path rust/Cargo.toml -p milky-ffi --lib --crate-type staticlib -- --print native-static-libs
 ```
 
-Currently `-liconv -framework CoreFoundation -lSystem -lc -lm`. Only
-CoreFoundation is not already provided by a default Swift link.
+Currently `-framework IOKit -liconv -framework CoreFoundation -lSystem -lc -lm`.
+IOKit and CoreFoundation are the ones a default Swift link does not provide;
+both are in the module map.
+
+---
+
+## 2026-10-08 — A system app extension ships a malformed Info.plist
+
+Status: worked around
+Area: rust-core
+
+Symptom:
+
+Scanning `/System/Library/ExtensionKit/Extensions` with Python's `plistlib`
+raised `not well-formed (invalid token): line 53` and aborted the scan.
+
+Cause:
+
+`NeptuneOneWallpaper.appex/Contents/Info.plist` is malformed XML on this macOS
+26 install. Apple's tools tolerate it; strict parsers do not.
+
+Fix / workaround:
+
+`settings::discover_settings_in` skips any bundle whose `Info.plist` does not
+parse. It is not a settings pane, so nothing is lost.
+
+Lesson:
+
+When enumerating system bundles, treat each one as untrusted input: skip what
+does not parse rather than failing the whole scan.
 

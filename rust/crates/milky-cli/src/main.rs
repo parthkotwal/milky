@@ -21,6 +21,7 @@ USAGE:
     milky <query>...          search, print ranked results
     milky                     interactive: one query per line, one warm engine
     milky --count             how many apps are indexed
+    milky --settings          list System Settings panes and their sections
 
 OPTIONS:
     --limit N                 maximum results (default 10)
@@ -40,6 +41,18 @@ fn main() -> ExitCode {
 
     if options.help {
         print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+
+    if options.settings {
+        let started = Instant::now();
+        let panes = milky_core::settings::discover_settings();
+        let items: usize = panes.iter().map(|pane| pane.items.len()).sum();
+        eprintln!("read {} panes, {items} items in {:.1?}", panes.len(), started.elapsed());
+        for pane in &panes {
+            let hidden = if pane.in_sidebar { "" } else { "  (not in sidebar)" };
+            println!("{:<34} {:>3} items  {}{hidden}", pane.name, pane.items.len(), pane.id);
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -68,6 +81,7 @@ struct Options {
     query: Option<String>,
     limit: usize,
     count: bool,
+    settings: bool,
     help: bool,
 }
 
@@ -76,6 +90,7 @@ impl Options {
         let mut limit = 10usize;
         let mut count = false;
         let mut help = false;
+        let mut settings = false;
         let mut words: Vec<&str> = Vec::new();
 
         let mut rest = args.iter();
@@ -91,6 +106,7 @@ impl Options {
                     }
                 }
                 "--count" => count = true,
+                "--settings" => settings = true,
                 "-h" | "--help" => help = true,
                 other if other.starts_with('-') => {
                     return Err(format!("unknown option '{other}'"));
@@ -111,6 +127,7 @@ impl Options {
             query,
             limit,
             count,
+            settings,
             help,
         })
     }

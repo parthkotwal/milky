@@ -6,5 +6,8 @@ module CMilkyFFI {
     // libmilky_ffi.a asks LaunchServices for app display names through
     // CoreFoundation, so every consumer of the archive must link it.
     link framework "CoreFoundation"
+    // Settings discovery asks IOKit whether this Mac has a battery
+    // ("Battery" vs "Energy" pane name).
+    link framework "IOKit"
     export *
 }

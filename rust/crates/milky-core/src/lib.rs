@@ -7,6 +7,7 @@ pub mod events;
 pub mod matching;
 pub mod search;
 pub mod storage;
+pub mod settings;
 pub mod usage;
 
 /// Normalize text for matching: fold case, accents, compatibility forms, and
