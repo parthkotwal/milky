@@ -16,6 +16,29 @@ public protocol SearchProvider: Sendable {
     func search(query: String) async throws -> [AppResult]
 }
 
+public enum SelectionOutcome: String, Sendable {
+    case opened
+    case failed
+}
+
+public struct SelectionEvent: Sendable, Equatable {
+    public let query: String
+    public let shown: [String]
+    public let selected: String
+    public let outcome: SelectionOutcome
+
+    public init(query: String, shown: [String], selected: String, outcome: SelectionOutcome) {
+        self.query = query
+        self.shown = shown
+        self.selected = selected
+        self.outcome = outcome
+    }
+}
+
+public protocol SelectionEventRecording: Sendable {
+    func recordSelection(_ event: SelectionEvent) async throws
+}
+
 /// Explicit development data. This is not app discovery or production ranking.
 public struct FixtureSearchProvider: SearchProvider {
     public init() {}

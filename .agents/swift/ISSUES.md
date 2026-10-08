@@ -63,15 +63,28 @@ Lesson: A working field editor alone does not provide a complete app menu.
 Validation: See TASKS.md QA notes for the final keyboard check.
 
 ## 2026-09-11 — Hidden-panel shortcut QA could not be established through automation
-Status: open
+Status: resolved
 Area: lifecycle
 Symptom: CUA timed out inspecting the hidden app after injected Control–Option–Space.
 Cause: Not established; injected app-targeted keys may not exercise Carbon's
 global hotkey route. Process sampling showed an idle main event loop, not a hang.
-Fix / workaround: Keep physical repeated shortcut/focus testing outstanding;
-registration success and automated key injection alone are not proof.
-Validation: Enter successfully dismissed the panel and opened Calculator. Global
-invocation/focus-return acceptance remains unchecked.
+Fix / workaround: Add opt-in local lifecycle diagnostics and test physically.
+Validation: On 2026-09-14 the user completed two successful shortcut → type →
+Escape cycles from another app. Diagnostics showed accepted focus return. CUA
+still cannot establish this interaction by itself.
+
+## 2026-09-14 — Accessibility clicks impersonate an external app activation
+Status: worked around
+Area: lifecycle
+Symptom: A CUA accessibility click on a result caused the panel to hide.
+Cause: The automation harness changes the foreground application while invoking
+the accessibility action. The workspace observer correctly interpreted that as
+the user switching apps.
+Fix / workaround: Do not use CUA accessibility clicks as physical-mouse QA.
+Also remove dismissal-on-resign-key: that notification alone is too weak and can
+occur transiently. Only a confirmed workspace activation dismisses the panel.
+Lesson: Distinguish AppKit key-window callbacks from a real foreground-app change.
+Validation: Lifecycle unit tests pass; physical shortcut/focus cycles pass.
 
 ## 2026-09-13 — Stale Rust archive handling in native builds
 Status: worked around

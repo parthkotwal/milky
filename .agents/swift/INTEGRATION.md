@@ -70,11 +70,51 @@ Swift-side summary for building the adapter:
 Owners: Rust exports and `milky.h` — core owner (the user writes the Rust side,
 learning-first). Swift adapter and linking — Swift owner.
 
+## Core changes — 2026-10-08
+
+- Result `name` is now the display name Finder shows, from LaunchServices
+  ("Find My", "Zoom", "Voice Memos"), not the bundle folder name. Paths, the
+  identity, are unchanged.
+- `milky_engine_new` takes about 23 ms longer: display-name lookups for ~127
+  apps. Keep creating the engine off the main thread.
+- `libmilky_ffi.a` now needs CoreFoundation. The core owner added
+  `link framework "CoreFoundation"` to `Sources/CMilkyFFI/module.modulemap`, so
+  every target importing `CMilkyFFI` links it automatically. Verified with
+  `scripts/build.sh test`: 21 Swift tests pass; `milky-probe` reports ABI 2.
+- Matching is now accent-insensitive and camelCase-aware. Result order still
+  comes entirely from Rust; no Swift change is required.
+
 ## Pending coordination
 
-- Impression/selection event messages: not designed. They will be new `op`
-  values in the same envelope, not new C functions.
+### Selection events — agreed and wired 2026-10-08
 
+Authoritative text: shared [`../DECISIONS.md`](../DECISIONS.md), "Selection
+events and durable usage history". Swift-side summary:
+
+- After acting on a picked result, send one
+  `{"op":"record_selection","query":...,"shown":[...],"selected":...,"outcome":"opened"|"failed"}`
+  through the existing `milky_engine_request`. No new C functions.
+- `shown` is every result path in display order at the moment of the action;
+  `selected` must be one of them. Send `failed` when opening fails. Only send
+  after a real interaction.
+- Expect `{"kind":"recorded"}`. A `bad_request` means the event was malformed
+  and nothing was stored. Treat errors as non-fatal: never block or alter the
+  launch, and do not retry in a loop.
+- The call does durable disk writes, about 9 ms typically and 14 ms at p95. Do
+  not issue it on the main thread.
+- **Rust side wired 2026-10-08.** The engine validates, appends to
+  `events.jsonl`, updates usage, and saves `usage.json` under one lock. Covered
+  by Rust tests including 4 concurrent senders and a poisoned lock. Swift may
+  start sending. The data directory is created on the first recorded event.
+- Recorded launches reorder results immediately: usage breaks ties within a
+  match kind (shared DECISIONS 2026-10-08). Result order still comes only from Rust.
+
+- **Swift side wired 2026-10-08.** After each real open attempt, the launcher
+  sends the query, displayed result IDs in order, selected ID, and `opened` or
+  `failed` outcome through `RustSearchProvider`. Fixture mode has no recorder.
+  The durable call runs asynchronously after the open attempt; errors are
+  intentionally ignored and cannot delay launch or change the UI. The adapter
+  accepts only `recorded` and surfaces malformed/error responses to the caller.
 
 ## Verified Swift adapter — 2026-09-13
 
@@ -97,5 +137,6 @@ learning-first). Swift adapter and linking — Swift owner.
   real no-match response, and Enter launching Calculator. 12 Swift tests pass,
   including actual ABI/engine requests, post-free result lifetime, concurrent
   callers, escaped input, wire errors, unsupported versions, and shutdown.
-- No usage event messages or persistence were added. App discovery is still the
+- Selection messages and durable usage persistence were added on 2026-10-08;
+  the adapter implementation is documented above. App discovery is still the
   Rust engine's startup snapshot; restart Milky to pick up installed/removed apps.

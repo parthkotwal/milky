@@ -1,28 +1,29 @@
 //! Milky's search engine core.
 
+pub mod api;
 pub mod apps;
+pub mod engine;
+pub mod events;
 pub mod matching;
 pub mod search;
-pub mod engine;
+pub mod storage;
 pub mod usage;
-pub mod api;
 
-/// Normalize a raw query for retrieval.
-///
-/// Lowercases, trims surrounding whitespace, and collapses internal runs of
-/// whitespace to single spaces.
+/// Normalize text for matching: fold case, accents, compatibility forms, and
+/// invisible formatting marks (see [`matching::fold`]), trim, and collapse runs
+/// of whitespace to single spaces. Applied to queries and to candidate names
+/// alike, so both sides are compared in the same form.
 pub fn normalize_query(input: &str) -> String {
-    // todo!("write me")
-    let lowered: String = input.to_lowercase();
-    let pieces: std::str::SplitWhitespace<'_>= lowered.split_whitespace();
-    let words: Vec<&str> = pieces.collect();
-    words.join(" ")
+    matching::fold(input)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn lowercases() {
         assert_eq!(normalize_query("Terminal"), "terminal");
@@ -46,5 +47,24 @@ mod tests {
     #[test]
     fn empty_input_gives_empty_output() {
         assert_eq!(normalize_query("   "), "");
+    }
+
+    #[test]
+    fn folds_accents() {
+        assert_eq!(normalize_query("  Café  Crème "), "cafe creme");
+        assert_eq!(normalize_query("Ångström"), "angstrom");
+    }
+
+    #[test]
+    fn strips_invisible_formatting_marks() {
+        // WhatsApp's bundle name starts with an invisible left-to-right mark.
+        assert_eq!(normalize_query("\u{200E}WhatsApp"), "whatsapp");
+    }
+
+    #[test]
+    fn folds_compatibility_forms() {
+        // A single "ﬁ" ligature character, and full-width letters.
+        assert_eq!(normalize_query("ﬁle"), "file");
+        assert_eq!(normalize_query("Ｆｕｌｌ"), "full");
     }
 }

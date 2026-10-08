@@ -3,5 +3,8 @@
 module CMilkyFFI {
     header "include/milky.h"
     link "milky_ffi"
+    // libmilky_ffi.a asks LaunchServices for app display names through
+    // CoreFoundation, so every consumer of the archive must link it.
+    link framework "CoreFoundation"
     export *
 }

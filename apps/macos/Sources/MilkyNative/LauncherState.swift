@@ -19,14 +19,17 @@ public final class LauncherState {
 
     private let provider: any SearchProvider
     private let opener: any AppOpening
+    private let eventRecorder: (any SelectionEventRecording)?
     private var request: Task<Void, Never>?
     private var progress: Task<Void, Never>?
     private var generation = 0
     private var active = true
 
-    public init(provider: any SearchProvider, opener: any AppOpening) {
+    public init(provider: any SearchProvider, opener: any AppOpening,
+                eventRecorder: (any SelectionEventRecording)? = nil) {
         self.provider = provider
         self.opener = opener
+        self.eventRecorder = eventRecorder
     }
 
     public var selected: AppResult? { results.first { $0.id == selectedID } }
@@ -103,18 +106,30 @@ public final class LauncherState {
 
     public func openSelected() async {
         guard canOpen, let result = selected else { return }
+        let eventQuery = query
+        let shownIDs = results.map(\.id)
         isOpening = true
         errorMessage = nil
         let token = generation
         do {
             try await opener.open(result)
+            recordSelection(query: eventQuery, shown: shownIDs, selected: result.id, outcome: .opened)
             if active, generation == token { onOpened?() }
         } catch {
+            recordSelection(query: eventQuery, shown: shownIDs, selected: result.id, outcome: .failed)
             if active, generation == token {
                 errorMessage = "Couldn’t open \(result.name). \(error.localizedDescription)"
             }
         }
         isOpening = false
+    }
+
+    private func recordSelection(query: String, shown: [String], selected: String,
+                                 outcome: SelectionOutcome) {
+        guard let eventRecorder else { return }
+        let event = SelectionEvent(query: query, shown: shown, selected: selected, outcome: outcome)
+        // Durable logging is deliberately off the launcher's critical path.
+        Task { try? await eventRecorder.recordSelection(event) }
     }
 
     public func dismiss() {

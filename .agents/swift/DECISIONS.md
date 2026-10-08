@@ -130,3 +130,35 @@ unsafe after Rust-only edits. Runtime ABI validation still rejects unsupported
 versions before creating an engine. Fixture runs now also require the Rust
 archive because both modes share one executable. Scripts refuse to overwrite a
 running app; Quit before relaunching with changed code or flags.
+
+## 2026-09-14 — Make invocation a session independent of panel visibility
+
+Decision: Track launcher invocation with `InvocationSession`, separate from
+`NSPanel.isVisible`. It retains one previous-app PID for a session and consumes
+it before dismissal. Workspace activation, rather than resign-key, establishes
+that the user has actually left Milky. The default hotkey coalesces repeat
+key-down events until a matching key-up.
+
+Why: AppKit can send visibility and key-window notifications during dismissal,
+and accessibility clients can transiently resign the panel. The previous design
+could dismiss from a weak signal and had no explicit protection against repeat
+hotkey delivery.
+
+Consequences: Escape returns focus exactly once if Milky owns focus. An action
+or application switch never pulls focus back. The panel is repositioned when
+display parameters change and always fits the pointer display’s visible frame.
+Lifecycle diagnostics are opt-in through `--diagnostics=<path>` and record no
+queries, names, paths, or keystroke contents.
+
+## 2026-10-08 — Add a ⌘Space trial shortcut option
+
+Decision: Keep Control–Option–Space as the default and add
+`--shortcut=command-space` for users who intentionally disable Spotlight's
+⌘Space binding. Preserve `--shortcut=command-shift-space`.
+
+Why: The user wants to try Milky as their Spotlight replacement without making
+the alternate binding a global default for other users.
+
+Consequences: The OS shortcut must be released in Keyboard Shortcuts before
+Milky can register ⌘Space. The active shortcut is reflected in the menu-bar
+Show item; registration failures retain the existing visible fallback.

@@ -4,7 +4,7 @@ import MilkyNative
 
 /// All handle access is actor-isolated. No pointer escapes and no unchecked
 /// Sendable conformance is needed. Synchronous requests finish before shutdown.
-public actor RustSearchProvider: SearchProvider {
+public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
     private var engine: EngineHandle?
     private var closed = false
     private let limit: Int
@@ -23,6 +23,28 @@ public actor RustSearchProvider: SearchProvider {
         let copied = try engine!.request(request)
         try Task.checkCancellation()
         return try Self.decode(copied, expectedQuery: query)
+    }
+
+    public func recordSelection(_ event: MilkyNative.SelectionEvent) async throws {
+        try Task.checkCancellation()
+        try prepare()
+        let request = try JSONEncoder().encode(RecordSelectionRequest(event: event))
+        let copied = try engine!.request(request)
+        try Self.validateRecorded(copied)
+    }
+
+    static func validateRecorded(_ data: Data) throws {
+        do {
+            let reply = try JSONDecoder().decode(Reply.self, from: data)
+            switch reply.kind {
+            case "recorded": return
+            case "error":
+                guard let reason = reply.reason, let message = reply.message else { throw BridgeError.invalidResponse }
+                throw BridgeError.engine(reason: reason, message: message)
+            default: throw BridgeError.invalidResponse
+            }
+        } catch let error as BridgeError { throw error }
+        catch { throw BridgeError.invalidResponse }
     }
 
     public func shutdown() {
@@ -63,10 +85,26 @@ private struct SearchRequest: Encodable {
     let limit: Int
 }
 
+private struct RecordSelectionRequest: Encodable {
+    let op = "record_selection"
+    let query: String
+    let shown: [String]
+    let selected: String
+    let outcome: String
+
+    init(event: MilkyNative.SelectionEvent) {
+        query = event.query
+        shown = event.shown
+        selected = event.selected
+        outcome = event.outcome.rawValue
+    }
+}
+
 private struct Reply: Decodable {
     let kind: String
     let query: String?
     let results: [Item]?
+    // `record_selection` success has kind `recorded` and no other fields.
     let reason: String?
     let message: String?
 

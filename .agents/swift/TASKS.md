@@ -11,25 +11,29 @@ Real Rust app search is connected. Explicit fixtures remain available for UI QA.
 - [x] Establish the runnable native app target and document its launch command.
 - [x] Implement the panel, search field, list, and selection state against an
       explicit fixture provider, following DESIGN.md.
-- [ ] Implement invocation, dismissal, focus behavior, keyboard navigation, and
-      native open/activate actions. Choose a configurable shortcut without
-      modifying the user's system shortcuts. Implementation landed; physical
-      shortcut/focus testing and the remaining QA below are still outstanding.
+- [x] Implement invocation, dismissal, focus behavior, keyboard navigation, and
+      native open/activate actions. Control–Option–Space is configurable and
+      does not modify system shortcuts. Core acceptance passed on 2026-09-14.
 - [x] Connect the agreed ABI 2 search boundary through the real Swift adapter.
 - [x] Build Rust before Swift and invalidate stale static linkage in the dev scripts.
 
-Completion requires a built, running native app; repeated shortcut invocation;
-responsive typing; real Rust results; duplicate-name disambiguation; correct
-Enter/Escape behavior; and successful open/activation. Exercise no-result and
-failure paths and inspect both appearances. A fixture-only UI is useful progress,
-but does not complete the milestone. Record any unavailable validation honestly.
+Status: native app-search foundation complete. The remaining checks below are
+quality follow-ups; they do not block the next product capability.
+
+## Next
+
+1. Run focused dogfooding QA with a physical mouse, VoiceOver enabled, a second
+   display, Spaces, and a full-screen app. Fix only failures actually observed.
+2. When the core returns a result type and supported actions, add a compact
+   action picker and preview surface. Keep the initial row/Enter action fast.
 
 ## Soon
 
-- [ ] Integrate real impression/selection reporting and confirm local persistence
-      with the core owner before sustained ranking-data collection.
-- [ ] Refine icon loading, layout, accessibility, and focus based on actual use.
-- [ ] Add result previews and secondary actions for the next real retrieval source.
+- [x] Integrate `record_selection` through the agreed Rust contract after each
+      real open attempt; fixtures remain excluded from persistence.
+- [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
+      behavior; record only concrete failures in ISSUES.md.
+- [ ] Add previews and secondary actions when a core result type supplies them.
 
 ## Later
 
@@ -56,7 +60,9 @@ Rust archive fingerprint and cleans Swift build products when it changes. Use
 these entry points after Rust edits; bare SwiftPM commands can retain stale Rust.
 
 Control–Option–Space is the default shortcut;
-`--shortcut=command-shift-space` selects the alternate. The menu bar item offers
+`--shortcut=command-shift-space` selects the alternate and
+`--shortcut=command-space` selects ⌘Space (disable Spotlight's matching
+shortcut first). The menu bar item offers
 Show/Quit; Command-Q quits an active panel. `--appearance=light` or `dark` applies
 only to this panel. Omitting appearance flags follows macOS.
 
@@ -69,7 +75,56 @@ apps/macos/scripts/run-fixtures.sh
 This wraps `run.sh --fixtures` and now also builds the linked Rust archive.
 Inputs: name substrings, `all`, `slow`, `error`, `zzzz`, `IDLE`, `Unavailable`.
 Real mode does not treat those words as fixture commands. Enter opens real app
-URLs in either mode. No usage is saved yet.
+URLs in either mode. Selection events are saved only in real Rust mode; fixture
+mode never writes usage history.
+
+## QA evidence — 2026-09-14 — Invocation and accessibility pass
+
+- The user physically ran two Control–Option–Space → type → Escape cycles from
+  another app. Both opened ready for typing and returned focus to the prior app.
+  Local opt-in lifecycle diagnostics recorded both `hotkey`, `dismiss-return`,
+  and `return-accepted` transitions. This replaces the earlier unverified
+  shortcut/focus status.
+- Invocation state now consumes its return target before ordering the panel out,
+  making reentrant dismissal inert. Repeated hotkey key-down notifications are
+  coalesced until key-up. A real activation of another app dismisses without
+  trying to steal focus back; merely resigning key status does not dismiss.
+- Placement is clamped to the pointer display’s visible frame and recomputed on
+  display-parameter changes. Tests cover primary, portrait, negative-origin,
+  and smaller-than-panel display frames.
+- Escape is handled by the native field editor and by the panel, so it works if
+  focus is no longer in the field. Up/Down, Return, standard text editing,
+  Command-A, click selection, and double-click opening share selection state.
+  CUA accessibility clicks change the foreground app and are therefore not a
+  trustworthy mouse-drag/click simulation; no physical-mouse claim is made.
+- AX inspection exposes selected traits, result paths, field usage help, and
+  Retry. VoiceOver receives selected-result, error, and no-match announcements.
+  The secondary text contrast is tested at at least 4.5:1 on normal and selected
+  surfaces in light and dark appearance. The opaque surface has no motion or
+  transparency dependency.
+- `apps/macos/scripts/build.sh test` passes 18 tests: 6 lifecycle/placement/
+  contrast cases, 7 state/icon cases, and 5 real Rust-bridge cases. Real
+  Rust searches, duplicate app paths, no matches, and Calculator opening were
+  verified in the native panel earlier in this milestone.
+
+Still unverified: physical mouse drag behavior, VoiceOver speech/navigation in
+an enabled VoiceOver session, multiple active displays/Spaces/full-screen apps,
+and toggling macOS accessibility settings. These are QA follow-ups, not blockers
+to the implemented invocation behavior.
+
+## QA evidence — 2026-10-08 — Result location and state polish
+
+- Result subtitles now show the final two parent-folder components, separated
+  by a chevron. The two fixture IDLE results visibly read `Applications ›
+  Python 3.12` and `Applications › Python 3.13`; VoiceOver and hover still
+  expose the complete absolute path.
+- The empty, populated, no-match, and fixture search-error states were inspected
+  in the running dark-mode panel. Live Rust search for `visual studio` showed
+  the correct Visual Studio Code result with the same compact location label.
+- Queries inside the 180 ms grace period no longer show the empty-state icon;
+  slower searches receive an explicit searching presentation after the delay.
+- `apps/macos/scripts/build.sh test` passes 21 tests, including location-label
+  formatting and the existing light/dark contrast checks.
 
 ## QA evidence — 2026-09-13
 
@@ -115,5 +170,6 @@ URLs in either mode. No usage is saved yet.
   shortcuts. Do not treat those timeouts as proof of the shortcut acceptance
   criteria; see ISSUES.md.
 
-The current milestone remains open for native invocation/action acceptance;
-the real Rust adapter requirement is now met.
+The native app-search foundation and first real selection-event wiring are
+complete. Next implementation work is focused native dogfooding, then action
+previews when the core supplies supported actions.

@@ -111,3 +111,26 @@ Normal launch uses an Applications footer and a neutral empty-query prompt.
 Only explicit fixture mode shows the Fixtures label and development examples.
 Layout and keyboard interaction are shared; real order/names come from Rust.
 Startup/ABI/response failures remain visible errors with Retry, never demo data.
+
+## Invocation accessibility — 2026-09-14
+
+The query field has a concise keyboard-use description. Selected results,
+errors, and a real no-match state request a VoiceOver announcement when
+VoiceOver is enabled; selected-result announcements include the parent path to
+distinguish duplicates. The persistent selected stripe remains a shape cue when
+color differentiation is reduced. Secondary text is tested for 4.5:1 contrast
+against normal and selected surfaces in both appearances.
+
+## Result and search-state refinement — 2026-10-08
+
+Result subtitles show the last two parent-folder components joined with a
+chevron, such as `Applications › Python 3.12`. This distinguishes duplicate
+application names while removing repeated absolute-path prefixes from the
+visual list. VoiceOver labels and tooltips continue to expose the full path;
+this supersedes the earlier visual default of showing the absolute path inline.
+
+When a new query is still within the short-search grace period, the result area
+stays visually quiet instead of showing an empty-state icon. Once the delay
+passes, the empty area identifies the ongoing search; quick searches do not
+flash a loading state. No-match and failure states retain separate symbols,
+messages, and retry behavior.

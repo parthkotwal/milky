@@ -21,20 +21,29 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       2026-09-13): `api.rs` message types, `Engine::handle_json`, five
       `milky-ffi` exports, header at ABI version 2. Verified: 75 Rust tests, a C
       program making 1000 requests through the real archive, `leaks` 0 leaks.
-- [ ] Swift adapter against the contract (Swift owner).
-- [ ] Swift binaries keep a stale Rust archive after Rust rebuilds; see
-      ISSUES.md 2026-09-13. Needs a durable build fix (Swift owner).
-- [ ] Usage persistence (serde, `UsageError`, atomic save). Specced 2026-09-11,
-      not written. Next natural consumer: selection events from the launcher.
+- [x] Swift adapter against the contract (Swift owner), 2026-09-13.
+- [x] Swift binaries keep a stale Rust archive after Rust rebuilds. Worked
+      around by `apps/macos/scripts/build.sh` (Swift owner); bare `swift build`
+      still bypasses it.
+- [x] Usage persistence: `storage.rs` (atomic write, durable append),
+      `usage.json` with corrupt-file quarantine, `events.jsonl` log. 2026-10-08.
+- [x] `record_selection` message, wired through `Engine` under a `Mutex`
+      (DECISIONS 2026-10-08). 103 Rust tests.
+- [x] Swift sends `record_selection` after real open attempts (Swift owner,
+      2026-10-08; verified in native tests and real bridge contract tests).
+- [x] Rank with usage: break ties within a match kind by decayed launch score
+      (DECISIONS 2026-10-08). 107 Rust tests.
+- [ ] Offline ranking evaluation over `events.jsonl` once real selections exist:
+      replay logged queries, compare rankers by where the pick lands (e.g. MRR).
 - [ ] Define the common candidate/result/action data model.
 - [x] Install full Xcode. Resolved in ISSUES.md; verify the active developer
       directory on a fresh machine.
-- [ ] Define the query and selection event schema.
+- [x] Define the selection event schema (DECISIONS 2026-10-08). Dismissal
+      without selection is not recorded yet.
 - [ ] Choose the first lexical retrieval implementation. App-name matching is a
       linear scan over 128 bundles at ~30-90 us, which is fine at this size and
       will not be for files.
-- [ ] Record selections so ranking can use usage. Nothing distinguishes ten
-      equally-good prefix matches today.
+- [ ] Rank with recorded usage so it can distinguish equally-good prefix matches.
 - [ ] Usage is three separate features, not one number. Keep them separate so
       each can be weighted and debugged independently:
       1. invocation frecency — decayed launch count, in `usage.rs`;
@@ -50,9 +59,10 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       model, not just ranking.
 - [ ] Results need a subtitle: three Python installs each ship `IDLE.app`, so
       the list shows the same word three times.
-- [ ] camelCase word boundaries: `ColorSync` should yield initials `c` and `s`.
-- [ ] Unicode: `to_lowercase` is not case folding and ignores accents, so `cafe`
-      will not match `café`.
+- [x] camelCase word boundaries: `ColorSync` yields words and initials `c`, `s`;
+      whole-word initials still count (2026-10-08).
+- [x] Unicode: queries and names fold accents, compatibility forms, and invisible
+      marks (`cafe` matches `café`). Not full case folding: `ß` stays `ß`.
 - [ ] Benchmark candidate local text embedding models.
 - [ ] Benchmark candidate local image embedding models.
 - [ ] Decide local model inference runtime.
@@ -62,18 +72,28 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 ## Soon
 
-- [ ] App discovery and launching. Bundle scanning works; display names are still
-      the bundle directory name, which is wrong for some apps (see `ISSUES.md`).
-- [ ] Decide how to get correct localized app display names: `core-foundation`
-      from Rust, or supplied by Swift.
+- [x] App discovery and launching, with Finder's display names (2026-10-08).
+- [x] Display names come from LaunchServices, called from Rust (DECISIONS 2026-10-08).
 - [ ] File/folder indexing.
 - [ ] Document text extraction.
 - [ ] Screenshot OCR.
 - [ ] Image embedding index.
 - [ ] Semantic text retrieval.
-- [ ] System settings/actions source.
+- [ ] System Settings source: panes *and the sections inside them*, the way
+      Spotlight finds "Bluetooth", "Night Shift", or "Camera" (privacy). Raised by
+      the user 2026-10-08 as critical for daily use. Findings that day:
+      51 panes are app extensions with extension point
+      `com.apple.Settings.extension.ui` in
+      `/System/Library/ExtensionKit/Extensions`; their bundle IDs work in
+      `x-apple.systempreferences:<id>` deep links. `Info.plist` display names are
+      unreliable (`AccessibilitySettingsExtension`), the same trap as app names.
+      Apple ships per-language `.searchTerms` keyword files inside the panes
+      (852 found); likely the source for sections and synonyms ("dark mode" ->
+      Appearance). First non-app result, so it forces the result model to carry
+      a kind and an action (open URL vs launch).
+- [ ] System actions (sleep, lock, empty trash, etc.).
 - [ ] Web-search fallback.
-- [ ] Usage-history persistence.
+- [x] Usage-history persistence.
 - [ ] Background filesystem watching and incremental updates.
 - [ ] Result previews and secondary actions.
 

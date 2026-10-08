@@ -21,6 +21,12 @@ private actor ControlledSearch: SearchProvider {
     }
 }
 
+private actor SelectionRecorder: SelectionEventRecording {
+    private(set) var events: [SelectionEvent] = []
+    func recordSelection(_ event: SelectionEvent) async throws { events.append(event) }
+    func recordedEvents() -> [SelectionEvent] { events }
+}
+
 @MainActor final class LauncherStateTests: XCTestCase {
     private let first = AppResult(id: "one", name: "IDLE", url: URL(fileURLWithPath: "/one/IDLE.app"))
     private let second = AppResult(id: "two", name: "IDLE", url: URL(fileURLWithPath: "/two/IDLE.app"))
@@ -111,6 +117,30 @@ private actor ControlledSearch: SearchProvider {
         XCTAssertNil(state.errorMessage)
     }
 
+    func testRecordsShownResultsAndActionOutcomeAfterAttempt() async throws {
+        let provider = ControlledSearch()
+        let opener = RecordingOpener()
+        let recorder = SelectionRecorder()
+        let state = LauncherState(provider: provider, opener: opener, eventRecorder: recorder)
+        state.setQuery("idle")
+        try await waitFor { await provider.contains("idle") }
+        await provider.succeed("idle", [first, second])
+        try await waitFor { !state.isSearching }
+        state.select(second.id)
+
+        opener.fails = true
+        await state.openSelected()
+        try await waitFor { await recorder.recordedEvents().count == 1 }
+        let failedEvent = await recorder.recordedEvents()[0]
+        XCTAssertEqual(failedEvent, SelectionEvent(query: "idle", shown: ["one", "two"], selected: "two", outcome: .failed))
+
+        opener.fails = false
+        await state.openSelected()
+        try await waitFor { await recorder.recordedEvents().count == 2 }
+        let openedEvent = await recorder.recordedEvents()[1]
+        XCTAssertEqual(openedEvent.outcome, .opened)
+    }
+
     func testNativeIconIsBoundedAndMissingIconUsesFallback() async throws {
         let url = URL(fileURLWithPath: "/System/Applications/Calculator.app")
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -124,6 +154,17 @@ private actor ControlledSearch: SearchProvider {
         XCTAssertLessThan(unwrapped.count, 100_000)
         let missing = await IconCache.shared.data(for: URL(fileURLWithPath: "/tmp/Milky Fixtures/DoesNotExist.app"))
         XCTAssertNil(missing)
+    }
+
+    func testResultLocationKeepsUsefulParentNamesWithoutFullAbsolutePath() {
+        XCTAssertEqual(
+            LauncherTheme.locationLabel(for: URL(fileURLWithPath: "/Applications/Python 3.12/IDLE.app")),
+            "Applications › Python 3.12"
+        )
+        XCTAssertEqual(
+            LauncherTheme.locationLabel(for: URL(fileURLWithPath: "/System/Applications/Calculator.app")),
+            "System › Applications"
+        )
     }
 
     func testRemovedSelectionAndLateErrorDoNotCorruptCurrentResults() async throws {

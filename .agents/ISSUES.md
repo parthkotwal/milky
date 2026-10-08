@@ -108,7 +108,7 @@ actually came back before debugging.
 
 ## 2026-09-11 — App display names are not in the bundle, and not in Info.plist
 
-Status: open
+Status: resolved
 Area: rust-core
 
 Symptom:
@@ -150,11 +150,19 @@ what Finder shows (`mdls -name kMDItemDisplayName <path>`) before trusting a
 field. This was caught only because a test printed real names from the machine —
 worth keeping tests that touch the real filesystem for exactly this reason.
 
+Resolution, 2026-10-08:
+
+`apps::display_name` asks LaunchServices from Rust through CoreFoundation
+(`CFURLCopyResourcePropertyForKey` with `kCFURLLocalizedNameKey`) and strips the
+`.app` the localized name keeps. Exactly matches Spotlight for all 127 apps on
+this machine; 5 had been wrong (`FindMy`, `VoiceMemos`, `zoom.us`, `RemotePlay`,
+`logioptionsplus`). About 0.2 ms per app, paid once at engine start.
+
 ---
 
 ## 2026-09-13 — Swift binaries keep a stale Rust archive after Rust rebuilds
 
-Status: open
+Status: worked around (`apps/macos/scripts/build.sh`; see `.agents/swift/ISSUES.md`)
 Area: build
 
 Symptom:
@@ -181,4 +189,42 @@ Lesson:
 
 "Build complete" does not mean Swift sees the latest Rust. Check
 `milky_abi_version()` at runtime; this check is what caught it.
+
+---
+
+## 2026-10-08 — Swift link failed after Rust gained a CoreFoundation dependency
+
+Status: resolved
+Area: build
+
+Symptom:
+
+After `milky-core` started calling CoreFoundation for app display names,
+`apps/macos/scripts/build.sh test` failed linking `milky-probe`:
+`_CFURLCopyResourcePropertyForKey`, `_kCFURLLocalizedNameKey`, and other CF
+symbols not found.
+
+Cause:
+
+A Rust `staticlib` records the system libraries it needs but does not link them;
+the final link, done by Swift, must. Nothing on the Swift side asked for
+CoreFoundation, and `milky-probe` imports no Apple framework that would bring it
+in.
+
+Fix / workaround:
+
+`link framework "CoreFoundation"` in `apps/macos/Sources/CMilkyFFI/module.modulemap`,
+so every target importing the archive links it. 21 Swift tests pass.
+
+Lesson:
+
+When a Rust dependency touches a system framework, list what the archive needs
+and make sure the module map covers it:
+
+```bash
+cargo rustc --manifest-path rust/Cargo.toml -p milky-ffi --lib --crate-type staticlib -- --print native-static-libs
+```
+
+Currently `-liconv -framework CoreFoundation -lSystem -lc -lm`. Only
+CoreFoundation is not already provided by a default Swift link.
 

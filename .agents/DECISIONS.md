@@ -188,7 +188,7 @@ search boundary is ready. No application behavior is implemented by this setup.
 ## 2026-09-13 — Swift ↔ Rust boundary: message-based JSON over a five-function C ABI
 
 Status: accepted by the user (core owner's call, delegated). Rust side implemented
-2026-09-13; Swift adapter not yet connected.
+2026-09-13; Swift adapter connected 2026-09-13.
 
 Decision:
 
@@ -271,3 +271,139 @@ Consequences — the contract:
 - Match kind crosses as a snake_case string, never a number: `MatchKind`
   declaration order is the ranking order and will change.
 - The header stays hand-written; Swift checks `milky_abi_version()` at startup.
+
+---
+
+## 2026-10-08 — Selection events and durable usage history
+
+Status: accepted (core owner's call, delegated by the user). Rust message types,
+storage, log, and engine wiring implemented 2026-10-08; Swift sending implemented
+2026-10-08 through the existing adapter.
+
+Decision:
+
+One new message in the existing JSON envelope, no new C functions. Swift sends it
+once, after acting on a picked result:
+
+```text
+request   {"op":"record_selection","query":"c",
+           "shown":["/System/Applications/Chess.app","/System/Applications/Calendar.app"],
+           "selected":"/System/Applications/Calendar.app","outcome":"opened"}
+response  {"kind":"recorded"}
+error     {"kind":"error","reason":"bad_request","message":"selected must be one of shown"}
+```
+
+- `shown` is every result path in display order when the user acted. `selected`
+  must be one of them. At most 100 paths; all absolute.
+- `outcome` is `opened` (app opened or brought forward) or `failed`. Only
+  `opened` counts as a launch in the usage store. Both are logged.
+- The engine stamps time on receipt. Clients do not send timestamps.
+- Effects, in order, under one lock: append one line to `events.jsonl`; if
+  opened, update the usage store; save `usage.json` atomically. The log goes
+  first because it is the raw record the store could be rebuilt from. `recorded`
+  means both are on disk.
+
+Files, in `~/Library/Application Support/Milky/`:
+
+- `events.jsonl` — append-only, one versioned record per selection
+  (`v`, `event`, `at_ms`, `query`, `shown`, `selected`, `outcome`). Raw history
+  for offline evaluation and later learned ranking.
+- `usage.json` — decayed launch scores per app path, derived from selections.
+  Written atomically (temp file, `sync_all`, rename).
+
+Why:
+
+The launcher needs usage to rank, and later learning needs to know what was
+passed over, not only what was picked. Logging the shown list with each
+selection captures that without a per-keystroke impression stream. The Swift
+side originally sketched four events (`impression`, `selection`,
+`action_attempt`, `action_success`). In this launcher a selection *is* the
+action, so one event with an outcome carries the same information with less
+coordination.
+
+Measured cost per selection on this machine: durable append p50 4.0 ms / p95
+7.1 ms; atomic save p50 4.9 ms / p95 6.5 ms; about 9 ms / 14 ms together. It
+runs once, after Enter, never on the keystroke path. Because the Swift adapter
+serializes engine calls, a search typed right after a failed launch can wait up
+to ~14 ms, under one frame. Writes therefore stay synchronous; no background
+writer.
+
+Consequences:
+
+- A corrupt `usage.json` is renamed to `usage.json.corrupt-<unix seconds>` and
+  the engine starts with empty history rather than refusing to start.
+- Queries and app paths are stored locally and never leave the machine,
+  consistent with the fully-local decision. Roughly 2 KB per selection; about
+  36 MB a year at 50 selections a day. Rotation can wait.
+- Not recorded in v1: dismissals without a selection (an abandonment signal
+  worth adding later as another `op`), and per-keystroke impressions.
+- Usage does not affect ranking yet; that is the next ranking step. When it
+  does, searches will read the same lock, and a search may wait behind a
+  selection write; revisit the lock type then.
+
+---
+
+## 2026-10-08 — Usage breaks ties within a match kind, and only that
+
+Status: implemented.
+
+Decision:
+
+Sort results by match kind (strongest first), then decayed usage score
+(highest first, `f64::total_cmp`), then name length, then name. Usage reorders
+results that match equally well; it never lifts a result past a stronger match.
+
+Why:
+
+Letting usage outrank match strength requires a weight — how many launches one
+match level is worth — and with no recorded selections any value would be
+invented. A wrong weight makes results jump unpredictably. Tie-breaking alone is
+a strict improvement: it only reorders results that were previously ordered by
+length and alphabet. Example: `c` now puts a used Calendar above an unused Chess.
+
+Consequences:
+
+`co` still ranks Console (prefix) above a daily-used Visual Studio Code (word
+prefix). Revisit once `events.jsonl` holds a few weeks of real selections:
+replay them offline and compare this ranker against weighted blends by where
+the user's pick lands. Pinned by the test `usage_never_beats_a_stronger_kind`.
+
+---
+
+## 2026-10-08 — App display names from LaunchServices; matching on precomputed folded keys
+
+Status: implemented.
+
+Decision:
+
+- Display names: at engine start, Rust asks macOS LaunchServices for each app's
+  localized name (`CFURLCopyResourcePropertyForKey`, `kCFURLLocalizedNameKey`,
+  via the `core-foundation` crate plus one hand-declared function), strips the
+  `.app` it keeps, and falls back to the bundle folder name.
+- Matching: each app carries a `NameKey` computed once. Names and queries are
+  folded the same way: NFKD, combining marks and invisible formatting characters
+  removed, lowercased (`unicode-normalization`). Words split on whitespace and at
+  camelCase boundaries. Whole-word initials and camelCase initials both count as
+  acronyms.
+
+Why:
+
+5 of 127 apps showed the wrong name (`FindMy` for Find My, `zoom.us` for Zoom,
+and so on); the fix matches Spotlight exactly for all 127. Supplying names from
+Swift was the alternative. Rejected because it would put a data source in the UI
+layer and make the engine's results depend on which client asked.
+
+Costs, measured: display names take about 23 ms at engine start (0.2 ms per
+app), off the UI thread, and again on reindex. Per-query matching got faster,
+from 60-90 us to 5-13 us, because names are no longer re-derived on every
+keystroke.
+
+Consequences:
+
+- Not full Unicode case folding: `ß` stays `ß`. Folding is deliberately lenient
+  for some scripts: Japanese voiced marks are dropped, so `が` matches `か`.
+- camelCase words can add mild extra word-prefix matches (`app` matches
+  WhatsApp), which rank below true prefix matches.
+- `libmilky_ffi.a` now depends on the CoreFoundation framework; every consumer
+  must link it. The `CMilkyFFI` module map declares it, so Swift targets get it
+  automatically.

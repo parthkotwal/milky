@@ -26,7 +26,9 @@ pub extern "C" fn milky_abi_version() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn milky_engine_new() -> *mut MilkyEngine {
     catch_unwind(|| {
-        let handle = MilkyEngine { engine: Engine::new() };
+        let handle = MilkyEngine {
+            engine: Engine::new(),
+        };
         Box::into_raw(Box::new(handle))
     })
     .unwrap_or(std::ptr::null_mut())
@@ -86,9 +88,7 @@ pub unsafe extern "C" fn milky_string_free(s: *mut c_char) {
     if s.is_null() {
         return;
     }
-    drop(unsafe {
-        CString::from_raw(s)
-    });
+    drop(unsafe { CString::from_raw(s) });
 }
 
 /// Move a response into a C string the caller owns.
@@ -133,7 +133,13 @@ mod tests {
             ))
         };
         assert_eq!(v["kind"], "search");
-        assert!(v["results"].as_array().unwrap().iter().any(|r| r["name"] == "Terminal"));
+        assert!(
+            v["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["name"] == "Terminal")
+        );
         unsafe { milky_engine_free(engine) };
     }
 

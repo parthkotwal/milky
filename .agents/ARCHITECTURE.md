@@ -49,8 +49,12 @@ A separate Python workspace is used for model experiments, offline evaluation, t
 subdirectories, a `MatchKind` ladder, and an `Engine` that scans once and
 answers queries. `milky-cli` (`milky`) drives it headlessly, including an
 interactive mode against one warm engine. `milky-ffi` exposes the
-five-function ABI; `api.rs` holds the wire types. Measured: ~1.6 ms to index 128 apps, ~30-90 us per
-query.
+five-function ABI; `api.rs` holds the wire types. `record_selection` messages
+append to `events.jsonl` and update `usage.json` (decayed launch scores) under a
+`Mutex` in the engine, in `~/Library/Application Support/Milky/`. Usage breaks
+ties within a match kind; it never outranks a stronger match. Apps carry Finder's display names and a precomputed matching key (folded,
+split on whitespace and camelCase). Measured: ~23 ms to index 127 apps
+(display-name lookups dominate), ~5-13 us per query.
 
 ## Runtime components
 
@@ -88,10 +92,10 @@ Responsibilities:
 
 The current integration uses an in-process Rust static library, a handwritten
 C header, and a SwiftPM system-library target. The engine/search contract (DECISIONS
-2026-09-13) is implemented on the Rust side at ABI version 2: five C functions,
-JSON request/response messages through `Engine::handle_json`, concurrent calls
-allowed. The Swift adapter is not connected yet. Events are future message
-types, not new functions. Swift-side coordination lives in
+2026-09-13) is implemented at ABI version 2: five C functions, JSON
+request/response messages through `Engine::handle_json`, and concurrent calls
+allowed. Swift search and selection-event adapters use the same boundary.
+Selection events are stored locally by the Rust engine. Swift-side coordination lives in
 `.agents/swift/INTEGRATION.md`; cross-language decisions remain shared.
 
 ### Background indexer

@@ -15,6 +15,8 @@ use crate::search::AppMatch;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Search(SearchRequest),
+    /// The user picked a result and the launcher tried to act on it.
+    RecordSelection(SelectionEvent),
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +34,8 @@ pub struct SearchRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
     Search(SearchResponse),
+    /// A `record_selection` event was validated and stored durably.
+    Recorded,
     Error(ErrorResponse),
 }
 
@@ -75,10 +79,59 @@ pub enum ErrorReason {
     Panic,
 }
 
+/// The most results a selection event may report as shown. Bounds log growth;
+/// the launcher displays far fewer.
+pub const MAX_SHOWN: usize = 100;
+
+/// One completed interaction: what was shown for a query, which result the user
+/// picked, and whether acting on it worked. Sent once, after the action finishes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SelectionEvent {
+    /// The query as typed when the user acted.
+    pub query: String,
+    /// Result paths in the order they were displayed.
+    pub shown: Vec<String>,
+    /// The path the user picked. Must be one of `shown`.
+    pub selected: String,
+    pub outcome: Outcome,
+}
+
+/// Whether the launcher's action on a selected result succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// The app opened or was brought forward. Only this counts as a launch.
+    Opened,
+    /// Acting on it failed, for example the app had been deleted.
+    Failed,
+}
+
+impl SelectionEvent {
+    /// Reject events that cannot be internally consistent, before they touch
+    /// stored history. The message becomes a `bad_request` error.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.shown.is_empty() {
+            return Err("shown must list at least the selected result".into());
+        }
+        if self.shown.len() > MAX_SHOWN {
+            return Err(format!(
+                "shown lists {} results; at most {MAX_SHOWN}",
+                self.shown.len()
+            ));
+        }
+        if !self.shown.iter().all(|path| path.starts_with('/')) {
+            return Err("every shown path must be absolute".into());
+        }
+        if !self.shown.contains(&self.selected) {
+            return Err("selected must be one of shown".into());
+        }
+        Ok(())
+    }
+}
+
 /// Sent if encoding a response ever fails, so a client always gets valid JSON.
 pub const ENCODE_FAILURE: &str =
     r#"{"kind":"error","reason":"internal","message":"failed to encode response"}"#;
-
 
 impl From<MatchKind> for WireMatchKind {
     fn from(kind: MatchKind) -> Self {
@@ -99,23 +152,22 @@ impl From<MatchKind> for WireMatchKind {
 /// would be a broken identity that clients could not open.
 pub fn result_item(m: &AppMatch) -> Option<ResultItem> {
     let path = m.path.to_str()?.to_string();
-    Some(ResultItem { 
-        path, 
-        name: m.name.clone(), 
-        match_kind: m.kind.into()
+    Some(ResultItem {
+        path,
+        name: m.name.clone(),
+        match_kind: m.kind.into(),
     })
 }
 
 /// Serialize an error response. For failures that happen before a request
 /// reaches the engine, like a null or non-UTF-8 request at the C boundary.
 pub fn error_json(reason: ErrorReason, message: &str) -> String {
-    let response = Response::Error(ErrorResponse { 
-        reason, 
+    let response = Response::Error(ErrorResponse {
+        reason,
         message: message.to_string(),
     });
     serde_json::to_string(&response).unwrap_or_else(|_| ENCODE_FAILURE.to_string())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -126,15 +178,27 @@ mod tests {
 
     #[test]
     fn wire_kinds_have_stable_snake_case_names() {
-        assert_eq!(serde_json::to_value(WireMatchKind::WordPrefix).unwrap(), "word_prefix");
-        assert_eq!(serde_json::to_value(WireMatchKind::Subsequence).unwrap(), "subsequence");
+        assert_eq!(
+            serde_json::to_value(WireMatchKind::WordPrefix).unwrap(),
+            "word_prefix"
+        );
+        assert_eq!(
+            serde_json::to_value(WireMatchKind::Subsequence).unwrap(),
+            "subsequence"
+        );
     }
 
     #[test]
     fn match_kinds_convert_by_name_not_position() {
         assert_eq!(WireMatchKind::from(MatchKind::Exact), WireMatchKind::Exact);
-        assert_eq!(WireMatchKind::from(MatchKind::Acronym), WireMatchKind::Acronym);
-        assert_eq!(WireMatchKind::from(MatchKind::Subsequence), WireMatchKind::Subsequence);
+        assert_eq!(
+            WireMatchKind::from(MatchKind::Acronym),
+            WireMatchKind::Acronym
+        );
+        assert_eq!(
+            WireMatchKind::from(MatchKind::Subsequence),
+            WireMatchKind::Subsequence
+        );
     }
 
     #[test]
@@ -143,6 +207,7 @@ mod tests {
             name: "Safari".into(),
             path: PathBuf::from("/Applications/Safari.app"),
             kind: MatchKind::Exact,
+            usage: 0.0,
         };
         let item = result_item(&m).expect("utf-8 path should convert");
         assert_eq!(item.path, "/Applications/Safari.app");
@@ -153,7 +218,76 @@ mod tests {
     fn a_non_utf8_path_is_skipped_not_mangled() {
         // 0xFF can never appear in UTF-8.
         let path = PathBuf::from(OsStr::from_bytes(b"/Applications/\xff.app"));
-        let m = AppMatch { name: "Broken".into(), path, kind: MatchKind::Prefix };
+        let m = AppMatch {
+            name: "Broken".into(),
+            path,
+            kind: MatchKind::Prefix,
+            usage: 0.0,
+        };
         assert!(result_item(&m).is_none());
+    }
+
+    fn selection(selected: &str, shown: &[&str]) -> SelectionEvent {
+        SelectionEvent {
+            query: "c".into(),
+            shown: shown.iter().map(|s| s.to_string()).collect(),
+            selected: selected.into(),
+            outcome: Outcome::Opened,
+        }
+    }
+
+    #[test]
+    fn record_selection_parses_from_the_contract_shape() {
+        let json = r#"{"op":"record_selection","query":"c",
+            "shown":["/System/Applications/Chess.app","/System/Applications/Calendar.app"],
+            "selected":"/System/Applications/Calendar.app","outcome":"opened"}"#;
+        match serde_json::from_str::<Request>(json).expect("valid request") {
+            Request::RecordSelection(event) => {
+                assert_eq!(event.selected, "/System/Applications/Calendar.app");
+                assert_eq!(event.outcome, Outcome::Opened);
+                assert_eq!(event.shown.len(), 2);
+            }
+            other => panic!("parsed as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recorded_serializes_as_a_bare_kind() {
+        assert_eq!(
+            serde_json::to_string(&Response::Recorded).unwrap(),
+            r#"{"kind":"recorded"}"#
+        );
+    }
+
+    #[test]
+    fn a_consistent_selection_validates() {
+        let event = selection("/A.app", &["/B.app", "/A.app"]);
+        assert_eq!(event.validate(), Ok(()));
+    }
+
+    #[test]
+    fn selected_must_have_been_shown() {
+        assert!(
+            selection("/C.app", &["/A.app", "/B.app"])
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn shown_must_not_be_empty() {
+        assert!(selection("/A.app", &[]).validate().is_err());
+    }
+
+    #[test]
+    fn relative_paths_are_rejected() {
+        assert!(selection("A.app", &["A.app"]).validate().is_err());
+    }
+
+    #[test]
+    fn oversized_shown_lists_are_rejected() {
+        let many: Vec<String> = (0..=MAX_SHOWN).map(|i| format!("/{i}.app")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(selection("/0.app", &refs).validate().is_err());
     }
 }

@@ -1,11 +1,20 @@
 //! The long-lived search engine.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+use std::time::SystemTime;
 
+use crate::api::{Outcome, SelectionEvent};
+use crate::events::{self, LoggedSelection};
+use crate::storage;
+use crate::usage::{self, UsageStore};
+
+use crate::api::{
+    ENCODE_FAILURE, ErrorReason, ErrorResponse, Request, Response, SearchResponse, result_item,
+};
 use crate::apps;
 use crate::normalize_query;
 use crate::search::{AppMatch, search_apps};
-use crate::api::{Request, Response, SearchResponse, ErrorResponse, ErrorReason, ENCODE_FAILURE, result_item};
 
 /// A warm search engine.
 ///
@@ -13,7 +22,10 @@ use crate::api::{Request, Response, SearchResponse, ErrorResponse, ErrorReason, 
 /// scan happens once here and the result is held. The field is private: the
 /// only way to change the index is [`Engine::reindex`].
 pub struct Engine {
-    apps: Vec<PathBuf>,
+    apps: Vec<apps::App>,
+    usage: Mutex<UsageStore>,
+    usage_path: PathBuf,
+    events_path: PathBuf,
 }
 
 // `Default` implies a cheap, obvious value, and `new` does about 1.6 ms of disk
@@ -23,7 +35,20 @@ pub struct Engine {
 impl Engine {
     /// Build an engine, scanning for installed apps once.
     pub fn new() -> Self {
-        Self { apps: apps::discover(), }
+        let dir = storage::data_dir().unwrap_or_else(|_| std::env::temp_dir().join("Milky"));
+        Self::with_data_dir(&dir)
+    }
+
+    pub fn with_data_dir(dir: &Path) -> Self {
+        let usage_path = dir.join(usage::FILE_NAME);
+        let events_path = dir.join(events::FILE_NAME);
+        let (store, _damaged) = UsageStore::load_or_quarantine(&usage_path, SystemTime::now());
+        Self {
+            apps: apps::discover_apps(),
+            usage: Mutex::new(store),
+            usage_path,
+            events_path,
+        }
     }
 
     /// How many apps are currently indexed.
@@ -37,14 +62,54 @@ impl Engine {
     /// that the matching layer expects a normalized query.
     pub fn search(&self, query: &str, limit: usize) -> Vec<AppMatch> {
         let normalized = normalize_query(query);
-        search_apps(&self.apps, &normalized, limit)
+        let now = SystemTime::now();
+        let store = self.lock_usage();
+        search_apps(&self.apps, &normalized, limit, |path| {
+            store.score(path, now)
+        })
     }
 
     /// Re-scan for installed apps, replacing the index.
     ///
     /// Takes `&mut self` because it replaces state no reader may be holding.
     pub fn reindex(&mut self) {
-        self.apps = apps::discover();
+        self.apps = apps::discover_apps();
+    }
+
+    fn lock_usage(&self) -> MutexGuard<'_, UsageStore> {
+        self.usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn usage_score(&self, path: &Path, now: SystemTime) -> f64 {
+        self.lock_usage().score(path, now)
+    }
+
+    fn record_selection(&self, event: SelectionEvent, now: SystemTime) -> Response {
+        if let Err(message) = event.validate() {
+            return Response::Error(ErrorResponse {
+                reason: ErrorReason::BadRequest,
+                message,
+            });
+        }
+        let mut store = self.lock_usage();
+        if let Err(err) = events::append(&self.events_path, &LoggedSelection::new(&event, now)) {
+            return Response::Error(ErrorResponse {
+                reason: ErrorReason::Internal,
+                message: format!("could not record selection: {err}"),
+            });
+        }
+        if event.outcome == Outcome::Opened {
+            store.record_launch(Path::new(&event.selected), now);
+        }
+        if let Err(err) = store.save(&self.usage_path) {
+            return Response::Error(ErrorResponse {
+                reason: ErrorReason::Internal,
+                message: format!("could not save usage history: {err}"),
+            });
+        }
+        Response::Recorded
     }
 
     /// Handle one serialized request and return a serialized response.
@@ -65,6 +130,7 @@ impl Engine {
                     results,
                 })
             }
+            Ok(Request::RecordSelection(event)) => self.record_selection(event, SystemTime::now()),
             Err(err) => Response::Error(ErrorResponse {
                 reason: ErrorReason::BadRequest,
                 message: format!("could not parse request: {err}"),
@@ -126,7 +192,7 @@ mod tests {
         assert_eq!(engine.app_count(), before);
     }
 
-        fn ask(engine: &Engine, request: &str) -> serde_json::Value {
+    fn ask(engine: &Engine, request: &str) -> serde_json::Value {
         serde_json::from_str(&engine.handle_json(request))
             .expect("a response must always be valid JSON")
     }
@@ -138,15 +204,24 @@ mod tests {
         assert_eq!(v["kind"], "search");
         assert_eq!(v["query"], "term");
         let results = v["results"].as_array().unwrap();
-        let terminal = results.iter().find(|r| r["name"] == "Terminal").expect("Terminal");
+        let terminal = results
+            .iter()
+            .find(|r| r["name"] == "Terminal")
+            .expect("Terminal");
         assert_eq!(terminal["match_kind"], "prefix");
-        assert_eq!(terminal["path"], "/System/Applications/Utilities/Terminal.app");
+        assert_eq!(
+            terminal["path"],
+            "/System/Applications/Utilities/Terminal.app"
+        );
     }
 
     #[test]
     fn no_matches_is_an_empty_search_not_an_error() {
         let engine = Engine::new();
-        let v = ask(&engine, r#"{"op":"search","query":"zzqqxxnomatch","limit":5}"#);
+        let v = ask(
+            &engine,
+            r#"{"op":"search","query":"zzqqxxnomatch","limit":5}"#,
+        );
         assert_eq!(v["kind"], "search");
         assert!(v["results"].as_array().unwrap().is_empty());
     }
@@ -183,5 +258,133 @@ mod tests {
     fn error_responses_carry_exactly_one_kind_key() {
         let raw = Engine::new().handle_json("not json");
         assert_eq!(raw.matches(r#""kind""#).count(), 1, "got {raw}");
+    }
+
+    const SAFARI: &str = "/Applications/Safari.app";
+
+    fn temp_data_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("milky-engine-{label}-{}", std::process::id()))
+    }
+
+    fn selection_json(outcome: &str) -> String {
+        format!(
+            r#"{{"op":"record_selection","query":"saf","shown":["{SAFARI}","/System/Applications/Calendar.app"],"selected":"{SAFARI}","outcome":"{outcome}"}}"#
+        )
+    }
+
+    fn log_lines(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join(events::FILE_NAME))
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn an_opened_selection_counts_as_a_launch() {
+        let dir = temp_data_dir("opened");
+        let engine = Engine::with_data_dir(&dir);
+        assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
+        assert!(engine.usage_score(Path::new(SAFARI), SystemTime::now()) > 0.99);
+        assert_eq!(log_lines(&dir).len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_selection_is_logged_but_not_counted() {
+        let dir = temp_data_dir("failed");
+        let engine = Engine::with_data_dir(&dir);
+        assert_eq!(ask(&engine, &selection_json("failed"))["kind"], "recorded");
+        assert_eq!(
+            engine.usage_score(Path::new(SAFARI), SystemTime::now()),
+            0.0
+        );
+        let lines = log_lines(&dir);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains(r#""outcome":"failed""#), "{}", lines[0]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn history_survives_a_restart() {
+        let dir = temp_data_dir("restart");
+        {
+            let engine = Engine::with_data_dir(&dir);
+            assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
+        }
+        let reopened = Engine::with_data_dir(&dir);
+        assert!(reopened.usage_score(Path::new(SAFARI), SystemTime::now()) > 0.99);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_inconsistent_selection_stores_nothing() {
+        let dir = temp_data_dir("inconsistent");
+        let engine = Engine::with_data_dir(&dir);
+        let v = ask(
+            &engine,
+            r#"{"op":"record_selection","query":"x","shown":["/A.app"],"selected":"/B.app","outcome":"opened"}"#,
+        );
+        assert_eq!(v["reason"], "bad_request");
+        assert!(!dir.join(usage::FILE_NAME).exists());
+        assert!(!dir.join(events::FILE_NAME).exists());
+    }
+
+    #[test]
+    fn concurrent_recordings_all_land() {
+        let dir = temp_data_dir("concurrent");
+        let engine = Engine::with_data_dir(&dir);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
+                    }
+                });
+            }
+        });
+        assert_eq!(log_lines(&dir).len(), 40);
+        let score = engine.usage_score(Path::new(SAFARI), SystemTime::now());
+        assert!(score > 39.9 && score <= 40.0, "score {score}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_poisoned_lock_does_not_stop_recording() {
+        let dir = temp_data_dir("poison");
+        let engine = Engine::with_data_dir(&dir);
+        let crashed = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _guard = engine.usage.lock().unwrap();
+                    panic!("simulated bug while holding the usage lock");
+                })
+                .join()
+        });
+        assert!(crashed.is_err());
+        assert!(engine.usage.is_poisoned());
+        assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn usage_reorders_real_results() {
+        let dir = temp_data_dir("rerank");
+        let engine = Engine::with_data_dir(&dir);
+        let position = |name: &str| {
+            engine
+                .search("c", 50)
+                .iter()
+                .position(|m| m.name == name)
+                .expect(name)
+        };
+        // With no history, the shorter name wins the tie.
+        assert!(position("Chess") < position("Calendar"));
+
+        let pick_calendar = r#"{"op":"record_selection","query":"c",
+            "shown":["/System/Applications/Chess.app","/System/Applications/Calendar.app"],
+            "selected":"/System/Applications/Calendar.app","outcome":"opened"}"#;
+        assert_eq!(ask(&engine, pick_calendar)["kind"], "recorded");
+
+        assert!(position("Calendar") < position("Chess"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

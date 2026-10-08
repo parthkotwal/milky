@@ -64,4 +64,14 @@ import XCTest
             XCTAssertThrowsError(try RustSearchProvider.decode(Data(text.utf8), expectedQuery: "a"))
         }
     }
+
+    func testSelectionAcknowledgementAndErrorsAreValidated() throws {
+        XCTAssertNoThrow(try RustSearchProvider.validateRecorded(Data(#"{"kind":"recorded"}"#.utf8)))
+        XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"error","reason":"bad_request","message":"selected must be shown"}"#.utf8))) { error in
+            guard case BridgeError.engine(let reason, _) = error else { return XCTFail("Expected engine error") }
+            XCTAssertEqual(reason, "bad_request")
+        }
+        XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"search","query":"x","results":[]}"#.utf8)))
+        XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"error"}"#.utf8)))
+    }
 }

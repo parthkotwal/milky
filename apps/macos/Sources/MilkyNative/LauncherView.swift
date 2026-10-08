@@ -1,14 +1,27 @@
 import AppKit
 import SwiftUI
 
-private enum Theme {
+enum LauncherTheme {
     static let rowHeight: CGFloat = 54
     static let inset: CGFloat = 16
     static let corner: CGFloat = 14
     static let title = Font.system(size: 14, weight: .medium)
     static let subtitle = Font.system(size: 12)
     static let hint = Font.system(size: 11, weight: .medium)
-    static let secondary = Color.primary.opacity(0.72)
+    static func locationLabel(for url: URL) -> String {
+        url.deletingLastPathComponent().standardizedFileURL.pathComponents
+            .filter { $0 != "/" && !$0.isEmpty }
+            .suffix(2)
+            .joined(separator: " › ")
+    }
+    static let secondaryTextColor = NSColor(name: nil) { appearance in
+        var color = NSColor.labelColor
+        appearance.performAsCurrentDrawingAppearance {
+            color = NSColor.labelColor.withAlphaComponent(0.72)
+        }
+        return color
+    }
+    static let secondary = Color(nsColor: secondaryTextColor)
 }
 
 public struct LauncherView: View {
@@ -25,7 +38,7 @@ public struct LauncherView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass").font(.system(size: 22)).foregroundStyle(Theme.secondary)
+                Image(systemName: "magnifyingglass").font(.system(size: 22)).foregroundStyle(LauncherTheme.secondary)
                 QueryField(value: Binding(get: { state.query }, set: { state.setQuery($0) }),
                            enabled: !state.isOpening, up: { state.moveSelection(-1) },
                            down: { state.moveSelection(1) }, submit: open, dismiss: dismiss)
@@ -35,19 +48,19 @@ public struct LauncherView: View {
                     ProgressView().controlSize(.small).accessibilityLabel(state.isOpening ? "Opening application" : "Searching")
                 }
             }
-            .padding(Theme.inset)
+            .padding(LauncherTheme.inset)
             Divider()
             content.frame(maxWidth: .infinity, maxHeight: .infinity)
             if let error = state.errorMessage {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
-                    Text(error).font(Theme.subtitle).textSelection(.enabled)
+                    Text(error).font(LauncherTheme.subtitle).textSelection(.enabled)
                     Spacer(minLength: 0)
                     Button("Retry") {
                         if state.results.isEmpty { state.refresh() } else { open() }
                     }.disabled(state.isOpening || state.isSearching)
                 }
-                .padding(Theme.inset)
+                .padding(LauncherTheme.inset)
                 .accessibilityElement(children: .contain)
             }
             Divider()
@@ -60,27 +73,38 @@ public struct LauncherView: View {
                 }
                 Spacer()
                 Text("↑↓ Navigate")
-                Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : Theme.secondary)
+                Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : LauncherTheme.secondary)
                 Text("esc Close")
             }
-            .font(Theme.hint).foregroundStyle(Theme.secondary)
-            .padding(.horizontal, Theme.inset).padding(.vertical, 11)
+            .font(LauncherTheme.hint).foregroundStyle(LauncherTheme.secondary)
+            .padding(.horizontal, LauncherTheme.inset).padding(.vertical, 11)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: Theme.corner))
-        .overlay(RoundedRectangle(cornerRadius: Theme.corner).strokeBorder(.primary.opacity(0.12)))
+        .clipShape(RoundedRectangle(cornerRadius: LauncherTheme.corner))
+        .overlay(RoundedRectangle(cornerRadius: LauncherTheme.corner).strokeBorder(.primary.opacity(0.12)))
+        .onChange(of: state.errorMessage) { _, message in
+            if let message { announce(message) }
+        }
+        .onChange(of: state.isSearching) { _, searching in
+            if !searching, state.results.isEmpty, state.errorMessage == nil, !state.query.isEmpty {
+                announce("No matching applications")
+            }
+        }
     }
 
     @ViewBuilder private var content: some View {
         if state.results.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: state.errorMessage != nil ? "exclamationmark.magnifyingglass" : "app.dashed")
-                    .font(.system(size: 30)).foregroundStyle(Theme.secondary)
-                Text(emptyTitle).font(.system(size: 16, weight: .medium))
-                Text(state.query.isEmpty && state.errorMessage == nil ? (fixtures ? "Try Safari, Calendar, or IDLE. Type all to inspect every fixture." : "Type an application name to get started.") :
-                        state.isSearching ? "" : state.errorMessage != nil ? "Change your query or retry below." : "Try another application name.")
-                    .font(Theme.subtitle).foregroundStyle(Theme.secondary)
-            }.padding(24)
+            if state.isSearching && !state.showsProgress {
+                Color.clear
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: emptySymbol)
+                        .font(.system(size: 30)).foregroundStyle(LauncherTheme.secondary)
+                    Text(emptyTitle).font(.system(size: 16, weight: .medium))
+                    Text(emptySubtitle)
+                        .font(LauncherTheme.subtitle).foregroundStyle(LauncherTheme.secondary)
+                }.padding(24)
+            }
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -90,8 +114,12 @@ public struct LauncherView: View {
                         }
                     }.padding(8)
                 }
-                .onChange(of: state.selectedID) { _, id in
+                .onChange(of: state.selectedID, initial: true) { _, id in
                     if let id { proxy.scrollTo(id, anchor: .center) }
+                    if let selected = state.selected,
+                       let index = state.results.firstIndex(where: { $0.id == selected.id }) {
+                        announce("\(selected.name), \(selected.url.deletingLastPathComponent().path), result \(index + 1) of \(state.results.count)")
+                    }
                 }
                 .onChange(of: state.errorMessage) { _, _ in
                     // Error feedback changes the viewport height; retain the selected row.
@@ -111,22 +139,39 @@ public struct LauncherView: View {
         return "No matching applications"
     }
 
+    private var emptySymbol: String {
+        if state.errorMessage != nil { return "exclamationmark.magnifyingglass" }
+        if state.isSearching { return "magnifyingglass" }
+        return state.query.isEmpty ? "app.dashed" : "magnifyingglass"
+    }
+
+    private var emptySubtitle: String {
+        if state.errorMessage != nil { return "Change your query or retry below." }
+        if state.isSearching { return "Looking through applications." }
+        if state.query.isEmpty {
+            return fixtures
+                ? "Try Safari, Calendar, or IDLE. Type all to inspect every fixture."
+                : "Type an application name to get started."
+        }
+        return "Try another application name."
+    }
+
     private func row(_ result: AppResult) -> some View {
         let selected = state.selectedID == result.id
         return HStack(spacing: 12) {
             AppIcon(url: result.url)
             VStack(alignment: .leading, spacing: 3) {
-                Text(result.name).font(Theme.title).lineLimit(1)
-                Text(result.url.deletingLastPathComponent().path).font(Theme.subtitle)
-                    .foregroundStyle(Theme.secondary).lineLimit(1).truncationMode(.middle)
+                Text(result.name).font(LauncherTheme.title).lineLimit(1)
+                Text(LauncherTheme.locationLabel(for: result.url)).font(LauncherTheme.subtitle)
+                    .foregroundStyle(LauncherTheme.secondary).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
-            if selected { Image(systemName: "return").font(Theme.subtitle).foregroundStyle(Theme.secondary) }
+            if selected { Image(systemName: "return").font(LauncherTheme.subtitle).foregroundStyle(LauncherTheme.secondary) }
         }
-        .padding(.horizontal, 12).frame(height: Theme.rowHeight)
+        .padding(.horizontal, 12).frame(height: LauncherTheme.rowHeight)
         .background(selected ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 7))
         .overlay(alignment: .leading) {
-            if selected { RoundedRectangle(cornerRadius: 2).fill(Color.accentColor).frame(width: 3, height: 24) }
+            if selected { RoundedRectangle(cornerRadius: 2).fill(LauncherTheme.secondary).frame(width: 3, height: 24) }
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { state.select(result.id); open() }
@@ -139,6 +184,12 @@ public struct LauncherView: View {
         .accessibilityAction(named: "Select") { state.select(result.id) }
     }
 
+    private func announce(_ message: String) {
+        guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
+
     private func open() { Task { await state.openSelected() } }
 }
 
@@ -148,7 +199,7 @@ private struct AppIcon: View {
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable() }
-            else { Image(systemName: "app.dashed").resizable().padding(5).foregroundStyle(Theme.secondary) }
+            else { Image(systemName: "app.dashed").resizable().padding(5).foregroundStyle(LauncherTheme.secondary) }
         }
         .frame(width: 32, height: 32).accessibilityHidden(true)
         .task(id: url) {
@@ -177,6 +228,7 @@ private struct QueryField: NSViewRepresentable {
         field.font = .systemFont(ofSize: 24)
         field.placeholderString = "Search applications…"
         field.setAccessibilityLabel("Search applications")
+        field.setAccessibilityHelp("Type an application name. Use Up and Down to select a result, Return to open, and Escape to close.")
         field.delegate = context.coordinator
         return field
     }
