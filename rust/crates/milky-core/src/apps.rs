@@ -151,58 +151,11 @@ pub fn display_name(path: &Path) -> Option<String> {
     localized_name(path).or_else(|| app_name(path))
 }
 
-#[cfg(target_os = "macos")]
+/// Finder's name with the `.app` it hides removed: "Calendar.app" -> "Calendar".
 fn localized_name(path: &Path) -> Option<String> {
-    use std::ffi::c_void;
-
-    use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;
-    use core_foundation::url::CFURL;
-    use core_foundation_sys::base::{Boolean, CFTypeRef};
-    use core_foundation_sys::error::CFErrorRef;
-    use core_foundation_sys::string::CFStringRef;
-    use core_foundation_sys::url::{CFURLRef, kCFURLLocalizedNameKey};
-
-    // Not exported by core-foundation-sys, which only binds the plural form.
-    unsafe extern "C" {
-        fn CFURLCopyResourcePropertyForKey(
-            url: CFURLRef,
-            key: CFStringRef,
-            property_value_type_ref_ptr: *mut c_void,
-            error: *mut CFErrorRef,
-        ) -> Boolean;
-    }
-
-    let url = CFURL::from_path(path, true)?;
-    let mut value: CFTypeRef = std::ptr::null();
-    // SAFETY: `url` is a live CFURL for the call's duration and `value` is a
-    // valid out-pointer. A null error pointer is permitted.
-    let ok = unsafe {
-        CFURLCopyResourcePropertyForKey(
-            url.as_concrete_TypeRef(),
-            kCFURLLocalizedNameKey,
-            &mut value as *mut CFTypeRef as *mut c_void,
-            std::ptr::null_mut(),
-        )
-    };
-    if ok == 0 || value.is_null() {
-        return None;
-    }
-    // SAFETY: a "Copy" function returns a +1 reference we now own, and this key
-    // yields a CFString. The wrapper releases it when dropped.
-    let name = unsafe { CFString::wrap_under_create_rule(value as CFStringRef) }.to_string();
-    // The localized name keeps the extension Finder hides: "Calendar.app".
-    let name = name
-        .strip_suffix(".app")
-        .unwrap_or(&name)
-        .trim()
-        .to_string();
-    (!name.is_empty()).then_some(name)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn localized_name(_path: &Path) -> Option<String> {
-    None
+    let name = crate::launch_services::localized_name(path)?;
+    let name = name.strip_suffix(".app").unwrap_or(&name).trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 #[cfg(test)]

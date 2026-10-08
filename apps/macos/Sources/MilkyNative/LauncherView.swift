@@ -8,6 +8,10 @@ enum LauncherTheme {
     static let title = Font.system(size: 14, weight: .medium)
     static let subtitle = Font.system(size: 12)
     static let hint = Font.system(size: 11, weight: .medium)
+    static func queryWidth(for query: String) -> CGFloat {
+        let measured = (query as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 24)]).width + 5
+        return min(max(measured, 18), 280)
+    }
     static let secondaryTextColor = NSColor(name: nil) { appearance in
         var color = NSColor.labelColor
         appearance.performAsCurrentDrawingAppearance {
@@ -36,9 +40,43 @@ public struct LauncherView: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 22)).foregroundStyle(LauncherTheme.secondary)
                 QueryField(value: Binding(get: { state.query }, set: { state.setQuery($0) }),
                            enabled: !state.isOpening, up: { state.moveSelection(-1) },
-                           down: { state.moveSelection(1) }, submit: open, dismiss: dismiss)
-                    .frame(height: 40)
+                           down: { state.moveSelection(1) }, submit: open, dismiss: dismiss,
+                           acceptSuggestion: { state.acceptInlineSuggestion() })
+                    .frame(width: state.query.isEmpty ? nil : LauncherTheme.queryWidth(for: state.query), height: 40)
                     .accessibilityLabel("Search apps and settings")
+                if let suggestion = state.inlineSuggestion {
+                    Button {
+                        state.acceptInlineSuggestion()
+                    } label: {
+                        HStack(spacing: 7) {
+                            Text("— \(suggestion.title)")
+                                .font(.system(size: 14))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text("tab")
+                                .font(.system(size: 10, weight: .medium))
+                                .padding(.horizontal, 5).padding(.vertical, 3)
+                                .background(.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 5))
+                        }
+                        .foregroundStyle(LauncherTheme.secondary)
+                        .padding(.horizontal, 9).padding(.vertical, 6)
+                        .background(.primary.opacity(0.055), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: 235)
+                    .disabled(state.isSearching || state.isOpening)
+                    .opacity(state.isSearching || state.isOpening ? 0.5 : 1)
+                    .help("Complete with \(suggestion.title) (Tab)")
+                    .accessibilityLabel("Complete query with \(suggestion.title)")
+                    .accessibilityHint("Press Tab to replace the query with this top result")
+                    .accessibilityAddTraits(.isButton)
+                    .transition(reduceMotion ? .identity : .opacity)
+                }
+                Spacer(minLength: 0)
+                if let suggestion = state.inlineSuggestion {
+                    ResultIcon(result: suggestion).frame(width: 32, height: 32)
+                        .transition(reduceMotion ? .identity : .opacity)
+                }
                 if state.showsProgress || state.isOpening {
                     ProgressView().controlSize(.small).accessibilityLabel(state.isOpening ? "Opening application" : "Searching")
                 }
@@ -50,6 +88,7 @@ public struct LauncherView: View {
                 .opacity(state.showsProgress && !state.results.isEmpty ? 0.68 : 1)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: state.results)
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: state.showsProgress)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: state.inlineSuggestion?.id)
             if let error = state.errorMessage {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
@@ -221,6 +260,7 @@ private struct QueryField: NSViewRepresentable {
     let down: () -> Void
     let submit: () -> Void
     let dismiss: () -> Void
+    let acceptSuggestion: () -> Bool
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSTextField {
@@ -231,7 +271,7 @@ private struct QueryField: NSViewRepresentable {
         field.font = .systemFont(ofSize: 24)
         field.placeholderString = "Search apps and settings…"
         field.setAccessibilityLabel("Search apps and settings")
-        field.setAccessibilityHelp("Type an app or setting name. Use Up and Down to select a result, Return to open, and Escape to close.")
+        field.setAccessibilityHelp("Type an app or setting name. Press Tab to complete the top suggestion, use Up and Down to select a result, Return to open, and Escape to close.")
         field.delegate = context.coordinator
         return field
     }
@@ -258,6 +298,7 @@ private struct QueryField: NSViewRepresentable {
             case #selector(NSResponder.moveDown(_:)): parent.down()
             case #selector(NSResponder.insertNewline(_:)): parent.submit()
             case #selector(NSResponder.cancelOperation(_:)): parent.dismiss()
+            case #selector(NSResponder.insertTab(_:)): return parent.acceptSuggestion()
             default: return false
             }
             return true

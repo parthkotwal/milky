@@ -90,6 +90,30 @@ private actor SelectionRecorder: SelectionEventRecording {
         XCTAssertEqual(state.selectedID, "app:/one/IDLE.app")
     }
 
+    func testInlineSuggestionUsesTopResultAndTabCompletesOnlyAfterSearchFinishes() async throws {
+        let provider = ControlledSearch()
+        let state = LauncherState(provider: provider, opener: RecordingOpener())
+        let visualStudioCode = AppResult(
+            id: "app:/Applications/Visual Studio Code.app",
+            title: "Visual Studio Code",
+            subtitle: "Applications",
+            action: .launch(URL(fileURLWithPath: "/Applications/Visual Studio Code.app"))
+        )
+
+        state.setQuery("vsc")
+        try await waitFor { await provider.contains("vsc") }
+        XCTAssertFalse(state.acceptInlineSuggestion(), "A stale or pending result must not be accepted")
+        await provider.succeed("vsc", [visualStudioCode, first])
+        try await waitFor { !state.isSearching }
+
+        XCTAssertEqual(state.inlineSuggestion, visualStudioCode, "Acronym matches can suggest the ranked result")
+        XCTAssertTrue(state.acceptInlineSuggestion())
+        XCTAssertEqual(state.query, "Visual Studio Code")
+        XCTAssertNil(state.inlineSuggestion, "An exact title match should not repeat as a suggestion")
+        XCTAssertTrue(state.isSearching)
+        XCTAssertFalse(state.canOpen, "Completing a query does not launch the result")
+    }
+
     func testEmptyFailureRecoveryAndActionFailure() async throws {
         let provider = ControlledSearch()
         let opener = RecordingOpener()

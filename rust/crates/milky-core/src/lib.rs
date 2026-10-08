@@ -10,6 +10,9 @@ pub mod storage;
 pub mod settings;
 pub mod usage;
 pub mod candidate;
+pub mod files;
+pub mod launch_services;
+pub mod places;
 
 /// Normalize text for matching: fold case, accents, compatibility forms, and
 /// invisible formatting marks (see [`matching::fold`]), trim, and collapse runs

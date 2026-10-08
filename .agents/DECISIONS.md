@@ -517,3 +517,44 @@ Consequences:
 - Pinned by `search::tests::real_queries_find_the_expected_destination` (19
   real queries on this Mac). The prior and tier ladder are hand-set guesses;
   revisit them with offline replay of `events.jsonl` once it has data.
+
+---
+
+## 2026-10-08 — File discovery: what Finder shows, minus generated and excluded folders
+
+Status: implemented (walk only; not yet searchable).
+
+Decision:
+
+- Roots: the home folder and iCloud Drive
+  (`~/Library/Mobile Documents/com~apple~CloudDocs`).
+- Skip what Finder hides: names starting with `.`, and folders with the
+  `UF_HIDDEN` flag (how `~/Library` is hidden, so it needs no special rule).
+- Packages (`kCFURLIsPackageKey`: `.app`, `.pages`, `.photoslibrary`) are one
+  file each and never entered. Symbolic links are neither followed nor listed.
+- Folders that mark themselves as generated are skipped: `CACHEDIR.TAG`,
+  `pyvenv.cfg`, `conda-meta`.
+- Everything else generated is a rule in
+  `~/Library/Application Support/Milky/exclusions.txt`: one per line, a bare
+  name matches that folder name anywhere, a `~/` or `/` path matches one
+  folder, `#` comments. Created with defaults (`node_modules`,
+  `bower_components`, `Pods`, `__pycache__`, `~/go/pkg/mod`) when missing;
+  never rewritten after that. Unparseable lines are reported, not dropped.
+- Unreadable folders are reported in `Walk::unreadable`, not fatal.
+
+Why:
+
+Raw, the home folder here holds 3.2M entries (18 s to walk), almost all in
+hidden tool folders; Finder's own rules bring it to ~23k in 0.05-0.3 s. Rules
+must hold for any Mac, not be tuned to this one (user, 2026-10-08), so tool
+output without a marker goes into a visible, editable list rather than code.
+Names like `build`, `dist`, `vendor` are left out of the defaults because
+people use them for their own folders. Reporting unreadable folders matters
+because macOS privacy protection blocks the launcher per folder (Desktop,
+Documents, Downloads, Photo Booth Library) and the user must be told.
+
+Consequences:
+
+Project source files are indexed (agreed). Exclusion rules match folders only,
+not file patterns. `~/.Trash` contents are not indexed: reading it needs Full
+Disk Access.

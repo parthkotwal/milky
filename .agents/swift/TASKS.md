@@ -20,6 +20,8 @@ the native adapter executes each result's declared primary action.
 - [x] Adopt ABI 3 result IDs, kinds, titles, subtitles, actions, and ID-based
       selection events; support opening System Settings deep links.
 - [x] Build Rust before Swift and invalidate stale static linkage in the dev scripts.
+- [x] Add a Spotlight-inspired top-result chip: preserve typed text, complete
+      the query with Tab, and show the result's icon at the trailing edge.
 
 Status: native app-search foundation complete. The remaining checks below are
 quality follow-ups; they do not block the next product capability.
@@ -30,6 +32,8 @@ quality follow-ups; they do not block the next product capability.
    display, Spaces, and a full-screen app. Fix only failures actually observed.
 2. Run interaction QA for mixed app/setting results and confirm a settings
    deep link opens the intended pane. Keep the initial row/Enter action fast.
+3. Dogfood the Tab suggestion with real Rust results, including an acronym
+   query such as `vsc`; verify completion leaves opening to Return.
 
 ## Soon
 
@@ -77,7 +81,7 @@ apps/macos/scripts/run-fixtures.sh
 ```
 
 This wraps `run.sh --fixtures` and now also builds the linked Rust archive.
-Inputs: title/subtitle substrings, `all`, `slow`, `error`, `zzzz`, `IDLE`, `Unavailable`.
+Inputs: title/subtitle substrings, `all`, `slow`, `error`, `zzzz`, `vsc`, `IDLE`, `Unavailable`.
 Real mode does not treat those words as fixture commands. Enter performs the
 selected fixture action or opens the real app/settings destination in Rust
 mode. Selection events are saved only in real Rust mode; fixture mode never
@@ -158,6 +162,16 @@ to the implemented invocation behavior.
   for the fixture error state. `--query slow --during-search` captures the
   delayed loading state. `--appearance light|dark` and `--output PATH` select
   appearance and destination.
+
+## QA evidence — 2026-10-08 — Ranked top-result suggestion
+
+- An explicit `vsc` fixture returns Visual Studio Code as the top result. The
+  dark offscreen snapshot shows `vsc` unchanged, a `Visual Studio Code` Tab
+  chip, the native app icon at the trailing edge, and the selected result row.
+  Snapshot verification confirmed the foreground app did not change.
+- State tests verify a pending/stale suggestion cannot be accepted, Tab
+  completion replaces the query without opening, and an exact title match
+  hides the chip. The complete Swift suite passes 24 tests.
 
 ## QA evidence — 2026-09-13
 

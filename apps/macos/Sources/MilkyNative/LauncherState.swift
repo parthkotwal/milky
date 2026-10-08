@@ -34,6 +34,21 @@ public final class LauncherState {
 
     public var selected: AppResult? { results.first { $0.id == selectedID } }
     public var canOpen: Bool { active && !isSearching && !isOpening && selected != nil }
+    public var inlineSuggestion: AppResult? {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, let result = results.first,
+              result.title.compare(query, options: [.caseInsensitive, .diacriticInsensitive]) != .orderedSame else {
+            return nil
+        }
+        return result
+    }
+
+    @discardableResult
+    public func acceptInlineSuggestion() -> Bool {
+        guard !isSearching, !isOpening, let suggestion = inlineSuggestion else { return false }
+        setQuery(suggestion.title)
+        return true
+    }
 
     public func setQuery(_ value: String) {
         guard !isOpening else { return }

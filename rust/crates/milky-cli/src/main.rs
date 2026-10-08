@@ -7,11 +7,14 @@
 //! No argument-parsing dependency on purpose: the surface is small enough to
 //! hand-roll, and the dependency tree stays empty.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 use milky_core::engine::Engine;
+use milky_core::files::{self, Exclusions};
 use milky_core::search::Hit;
 
 const USAGE: &str = "\
@@ -22,6 +25,8 @@ USAGE:
     milky                     interactive: one query per line, one warm engine
     milky --count             how many apps and settings are indexed
     milky --settings          list System Settings panes and their sections
+    milky --files             walk the home folder and iCloud Drive: counts,
+                              timing, unreadable folders, largest folders
 
 OPTIONS:
     --limit N                 maximum results (default 10)
@@ -42,6 +47,10 @@ fn main() -> ExitCode {
     if options.help {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+
+    if options.files {
+        return list_files();
     }
 
     if options.settings {
@@ -87,6 +96,7 @@ struct Options {
     limit: usize,
     count: bool,
     settings: bool,
+    files: bool,
     help: bool,
 }
 
@@ -96,6 +106,7 @@ impl Options {
         let mut count = false;
         let mut help = false;
         let mut settings = false;
+        let mut files = false;
         let mut words: Vec<&str> = Vec::new();
 
         let mut rest = args.iter();
@@ -112,6 +123,7 @@ impl Options {
                 }
                 "--count" => count = true,
                 "--settings" => settings = true,
+                "--files" => files = true,
                 "-h" | "--help" => help = true,
                 other if other.starts_with('-') => {
                     return Err(format!("unknown option '{other}'"));
@@ -133,6 +145,7 @@ impl Options {
             limit,
             count,
             settings,
+            files,
             help,
         })
     }
@@ -210,5 +223,83 @@ fn interactive(engine: &Engine, limit: usize) -> ExitCode {
         }
 
         run_query(engine, query, limit);
+    }
+}
+
+/// Walk the file roots the way the engine will, and show what was found and
+/// what it cost. Creates `exclusions.txt` with the defaults if it is missing.
+fn list_files() -> ExitCode {
+    let Some(home) = std::env::home_dir() else {
+        eprintln!("no home directory");
+        return ExitCode::FAILURE;
+    };
+    let exclusions = load_exclusions(&home);
+
+    let started = Instant::now();
+    let walk = files::discover_files(&home, &exclusions);
+    let elapsed = started.elapsed();
+
+    let folders = walk.entries.iter().filter(|entry| entry.is_folder).count();
+    println!(
+        "{} entries ({folders} folders, {} files) in {elapsed:.1?}",
+        walk.entries.len(),
+        walk.entries.len() - folders,
+    );
+    for root in files::roots(&home) {
+        println!("  root: {}", tilde(&root, &home));
+    }
+    for dir in &walk.unreadable {
+        println!("  unreadable: {}", tilde(dir, &home));
+    }
+
+    // Two levels below the home folder is where one project or one tool's
+    // output shows up as a single line, which is what deciding on an
+    // exclusion needs.
+    let mut sizes: HashMap<PathBuf, usize> = HashMap::new();
+    for entry in &walk.entries {
+        let relative = entry.path.strip_prefix(&home).unwrap_or(&entry.path);
+        *sizes.entry(relative.components().take(2).collect()).or_default() += 1;
+    }
+    let mut largest: Vec<(PathBuf, usize)> = sizes.into_iter().collect();
+    largest.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    println!("largest folders:");
+    for (folder, count) in largest.iter().take(10) {
+        println!("  {count:>7}  ~/{}", folder.display());
+    }
+    ExitCode::SUCCESS
+}
+
+/// The user's exclusions, reported, falling back to the defaults on any error
+/// so a broken file never means indexing everything.
+fn load_exclusions(home: &Path) -> Exclusions {
+    let path = match files::exclusions_path() {
+        Ok(path) => path,
+        Err(err) => {
+            println!("exclusions: {err}; using the defaults");
+            return Exclusions::defaults(home);
+        }
+    };
+    let existed = path.exists();
+    match files::load_exclusions(&path, home) {
+        Ok((rules, ignored)) => {
+            let created = if existed { "" } else { ", just created with the defaults" };
+            println!("exclusions: {} ({} rules{created})", tilde(&path, home), rules.len());
+            for line in &ignored {
+                println!("  ignored line, not a name or a path: {line}");
+            }
+            rules
+        }
+        Err(err) => {
+            println!("exclusions: {}: {err}; using the defaults", tilde(&path, home));
+            Exclusions::defaults(home)
+        }
+    }
+}
+
+/// `path` with the home folder written as `~`.
+fn tilde(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(relative) => format!("~/{}", relative.display()),
+        Err(_) => path.display().to_string(),
     }
 }

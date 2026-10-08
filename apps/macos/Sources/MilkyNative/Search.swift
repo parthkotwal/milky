@@ -68,6 +68,7 @@ public struct FixtureSearchProvider: SearchProvider {
         app("Safari", "/Applications/Safari.app"),
         app("Calculator", "/System/Applications/Calculator.app"),
         app("Calendar", "/System/Applications/Calendar.app"),
+        app("Visual Studio Code", "/Applications/Visual Studio Code.app"),
         app("Notes", "/System/Applications/Notes.app"),
         app("TextEdit", "/System/Applications/TextEdit.app"),
         setting("settings:com.apple.wifi-settings-extension", "Wi-Fi", "System Settings", "x-apple.systempreferences:com.apple.wifi-settings-extension"),
@@ -91,6 +92,7 @@ public struct FixtureSearchProvider: SearchProvider {
         try await Task.sleep(for: .milliseconds(key == "slow" ? 1200 : 60))
         if key == "error" { throw FixtureError.unavailable }
         if key == "all" || key == "slow" { return Self.results }
+        if key == "vsc" { return Self.results.filter { $0.title == "Visual Studio Code" } }
         return Self.results.filter { $0.title.localizedCaseInsensitiveContains(key) || $0.subtitle.localizedCaseInsensitiveContains(key) }
     }
 }

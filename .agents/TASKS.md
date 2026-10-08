@@ -77,7 +77,37 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 - [x] App discovery and launching, with Finder's display names (2026-10-08).
 - [x] Display names come from LaunchServices, called from Rust (DECISIONS 2026-10-08).
-- [ ] File/folder indexing.
+- [ ] File and folder search. Plan agreed 2026-10-08. Goal: a few letters of
+      a file or folder put the right one at or near the top, including basic
+      places (Applications, Downloads, Documents), where Spotlight fails.
+      Rules are general conventions or user settings, never tuned to one Mac.
+      Measured: home folder 3.2M entries / 18 s raw; a Finder-style walk finds
+      ~23k entries in ~55 ms (warm). Linear name scan ~1 ms at that size; an
+      inverted index waits for document contents.
+      1. [x] Walk (2026-10-08, `files.rs`, `milky --files`): home + iCloud Drive; skip what Finder hides (dot names,
+         `UF_HIDDEN`, which covers `~/Library`); packages are one result; no
+         symlinks; unreadable folders reported. Exclusion list in Milky's data
+         folder, user-editable, created with defaults for known tool output
+         (`node_modules`, `__pycache__`, Go's module cache, ...); folders
+         marked `CACHEDIR.TAG` / `pyvenv.cfg` / `conda-meta` skipped. Project
+         source files are indexed. Measured on this Mac: 22,875 entries
+         (3,174 folders), 0.30 s first walk, 0.05 s warm; without the defaults,
+         Go's module cache alone added ~36,800.
+      2. [ ] Well-known places as results: Home, Desktop, Documents,
+         Downloads, Applications (`/Applications`, system), Utilities, Movies,
+         Music, Pictures, Public, iCloud Drive, Library, Trash. Names from
+         macOS (localized). Rank high: `downloads` -> Downloads first.
+      3. [ ] Files in search: path-aware matching (`332 ex01` ->
+         `school/cse332/ex01.pdf`), file ranking (match, usage, recency,
+         location, folder vs file) tuned on a query set; top-k selection.
+      4. [ ] Background indexing: startup unchanged, files arrive after.
+      5. [ ] Launcher: contract v4 (file/folder/place kinds, open and reveal
+         actions), folder-permission prompts. Rebuild the launcher here.
+      6. [ ] Freshness via FSEvents.
+      Later, opt-in: items inside the Trash. `~/.Trash` is unreadable without
+      Full Disk Access ("Operation not permitted", even from Terminal), so it
+      waits until Milky has another reason to ask for that permission. Shown as
+      the item itself, subtitled "In Trash", revealed in Finder.
 - [ ] Document text extraction.
 - [ ] Screenshot OCR.
 - [ ] Image embedding index.

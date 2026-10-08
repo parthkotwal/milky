@@ -56,7 +56,9 @@ ties within a match kind; it never outranks a stronger match.
 `settings.rs` reads System Settings panes and their sections (51 panes, 711
 items, deep links verified). `candidate.rs` turns apps and settings into one
 list of destinations (127 apps, 606 settings) with IDs, subtitles, and actions;
-search ranks them together by tier (title match kind interleaved with
+`files.rs` walks the home folder and iCloud Drive with Finder's visibility
+rules and a user-editable exclusion list (~23k entries here, 0.05-0.3 s); file
+results are not wired into search yet. Search ranks apps and settings together by tier (title match kind interleaved with
 Apple's keyword matches), then usage, then destination prior (app > pane >
 section). Apps carry Finder's display names and a precomputed matching key (folded,
 split on whitespace and camelCase). Measured: ~90 ms to index 127 apps and 606

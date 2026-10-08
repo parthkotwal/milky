@@ -39,6 +39,26 @@
             "target": "milky-launcher",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release milky-launcher (apps/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:milky}/apps/macos",
+            "name": "Debug milky-snapshot (apps/macos)",
+            "target": "milky-snapshot",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug milky-snapshot (apps/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:milky}/apps/macos",
+            "name": "Release milky-snapshot (apps/macos)",
+            "target": "milky-snapshot",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release milky-snapshot (apps/macos)"
         }
     ]
 }

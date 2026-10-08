@@ -230,3 +230,29 @@ roots used by the Rust settings index. Lookup runs off the main thread and is
 cached with app icons. Missing bundles or icons retain the SF Symbol fallback;
 no Rust or ABI change is required. Apple API reference:
 https://developer.apple.com/documentation/appkit/nsworkspace/icon%28forfile%3A%29
+
+## 2026-10-08 — Suggest the ranked top result without changing typed text
+
+Decision: When a non-exact query has results, show the first ranked destination
+in a compact chip beside the query and its native icon at the trailing edge.
+Tab replaces the query with the result title and reruns search; Return retains
+its existing meaning and opens the selected result. Keep a stale suggestion
+visible during an in-flight refresh for visual stability, but disable acceptance
+until that search completes. Suppress the chip when query and title match
+case-insensitively.
+
+Why: Spotlight's completion affordance makes the likely destination easy to
+recognize, and the side icon reinforces that identity. A result-based chip also
+supports abbreviations such as `vsc`, where app-name suffix completion cannot
+be inferred from the typed characters. Keeping typed text untouched avoids
+overwriting the user's query as ranking changes.
+
+Alternatives: Inline suffix completion would require a text-prefix relationship
+and would distort acronym matches. Automatically opening the top result on Tab
+would make completion too destructive and conflict with the existing Return
+action.
+
+Consequences: The suggestion uses the existing ordered search response and
+native icon cache, so it requires no contract or Rust changes. The explicit
+`vsc` fixture supports offscreen visual QA; fixture icon availability follows
+the host's installed-app state.

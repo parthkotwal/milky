@@ -74,6 +74,11 @@ match scores, ABI details, or debugging controls in the normal search experience
   real result types need them; do not fill the first panel with placeholders.
 - Keep invocation and typing immediate. Motion must not gate input or actions.
   Use brief, subtle transitions only where they explain a change; respect Reduce Motion.
+- For a non-exact query with a ranked top result, keep the user's text intact
+  and show that destination as a compact Tab-completable suggestion beside the
+  field, with its icon at the trailing edge. Tab completes the query; Return
+  continues to perform the primary action. This works for abbreviations as well
+  as prefixes, and the suggestion stays unavailable while results are stale.
 
 ## States and accessibility
 
