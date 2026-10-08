@@ -90,12 +90,14 @@ focus, render an offscreen PNG:
 apps/macos/scripts/snapshot.sh --query all --appearance dark --output /tmp/milky-all.png
 apps/macos/scripts/snapshot.sh --query zzzz --appearance light --output /tmp/milky-empty.png
 apps/macos/scripts/snapshot.sh --query slow --during-search --output /tmp/milky-loading.png
+apps/macos/scripts/snapshot.sh --previous-query all --query slow --during-search --output /tmp/milky-refreshing.png
 ```
 
 The snapshot executable uses explicit fixtures, never opens results or records
 usage, and verifies the foreground app is unchanged. Generated images default
 to the ignored `apps/macos/.build/snapshots/` directory when `--output` is not
-provided.
+provided. `--previous-query` first resolves a fixture query so an in-flight
+snapshot can show old rows held in place while a new query is loading.
 
 ## QA evidence — 2026-09-14 — Invocation and accessibility pass
 
@@ -205,6 +207,21 @@ The native app-search foundation and first real selection-event wiring are
 complete. Next implementation work is focused native dogfooding, then action
 previews when the core supplies supported actions.
 
+## QA evidence — 2026-10-08 — Smoother query updates
+
+- Changed queries now keep the current results and highlight steady until the
+  replacement response arrives; actions remain disabled during that interval.
+  A new query resets to its first result after the response, while same-query
+  refresh keeps the selected destination if it still exists.
+- Result insertions, removals, and reordering use a short fade. For searches
+  lasting beyond the progress delay, old rows dim gently while the spinner is
+  shown. Reduce Motion disables these effects.
+- Snapshot harness accepts `--previous-query` to render the in-flight state
+  without taking keyboard focus. An offscreen dark snapshot shows the previous
+  results subdued beneath the delayed spinner. Automated state coverage verifies
+  stale rows and their highlight remain visible, cannot launch under the new
+  query, and selection resets to the first result when new results arrive.
+
 ## QA evidence — 2026-10-08 — Contract v3 adapter
 
 - `apps/macos/scripts/build.sh test` passes 22 tests. The real linked Rust
@@ -212,10 +229,23 @@ previews when the core supplies supported actions.
   IDs, titles, subtitles, and `x-apple.systempreferences` open actions. Fixture
   decoding also covers both app and setting result rows.
 - Offscreen snapshots of the mixed fixture list and settings-only results were
-  rendered in dark and light appearance. The settings rows use a native symbol
-  and the pane subtitle; app rows retain native icons and folder subtitles.
+  rendered in dark and light appearance. The settings rows use their pane icon
+  and subtitle; app rows retain native icons and folder subtitles.
   Snapshot generation verified the foreground app stayed unchanged.
 - The native opener's System Settings handoff is implemented but has not been
   activated in a live panel during this pass. Keep this as a focused manual
   check; the user may run Milky without requiring keyboard or screen focus from
   the test harness.
+
+## QA evidence — 2026-10-08 — System Settings pane icons
+
+- Settings results carry a pane bundle ID, and each ID resolves to a matching
+  `.appex` under the same two macOS roots the Rust index scans. AppKit's
+  `NSWorkspace.icon(forFile:)` reads the extension's associated icon directly;
+  on this machine that returns the actual Wi-Fi and Network pane artwork.
+- The fixture Wi-Fi rows now use real pane IDs. An offscreen snapshot shows the
+  blue Wi-Fi pane icon in both the pane and its Advanced section, while app
+  icons remain unchanged. Icon lookup and rasterization happen off the display
+  path; the existing SF Symbol remains the fallback when no icon is available.
+- No Rust changes or ABI changes were needed. All 23 Swift tests pass, including
+  a bounded 64 × 64 settings-icon regression check.

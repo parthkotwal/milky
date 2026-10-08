@@ -14,6 +14,10 @@ struct MilkySnapshot {
         }
 
         let state = LauncherState(provider: FixtureSearchProvider(), opener: SnapshotOpener())
+        if let previousQuery = options.previousQuery {
+            state.setQuery(previousQuery)
+            try await waitForSearch(state)
+        }
         if !options.query.isEmpty {
             state.setQuery(options.query)
             if options.captureDuringSearch {
@@ -89,12 +93,14 @@ private struct SnapshotOpener: AppOpening {
 
 private struct SnapshotOptions {
     let query: String
+    let previousQuery: String?
     let outputURL: URL
     let appearanceName: NSAppearance.Name?
     let captureDuringSearch: Bool
 
     init(arguments: [String]) throws {
         var query = ""
+        var previousQuery: String?
         var outputURL = URL(fileURLWithPath: ".build/snapshots/milky.png", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
         var appearanceName: NSAppearance.Name?
         var captureDuringSearch = false
@@ -111,6 +117,7 @@ private struct SnapshotOptions {
             let value = arguments[index + 1]
             switch argument {
             case "--query": query = value
+            case "--previous-query": previousQuery = value
             case "--output": outputURL = URL(fileURLWithPath: value)
             case "--appearance":
                 switch value {
@@ -124,6 +131,7 @@ private struct SnapshotOptions {
         }
 
         self.query = query
+        self.previousQuery = previousQuery
         self.outputURL = outputURL.standardizedFileURL
         self.appearanceName = appearanceName
         self.captureDuringSearch = captureDuringSearch
@@ -141,7 +149,7 @@ private enum SnapshotError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            return "Usage: milky-snapshot [--query TEXT] [--during-search] [--appearance light|dark] [--output PATH]"
+            return "Usage: milky-snapshot [--previous-query TEXT] [--query TEXT] [--during-search] [--appearance light|dark] [--output PATH]"
         case .activationPolicy:
             return "Could not set the snapshot process to a non-activating policy."
         case .bitmap:

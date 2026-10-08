@@ -24,8 +24,9 @@ direction unless there is a reason to revise it; do not reinvent the app per scr
 - Use the macOS system typeface deliberately: system-native is the chosen
   direction. Define query, result title, subtitle, and keyboard-hint roles with
   clear size/weight differences. Metadata remains readable rather than faint.
-- Use native app icons for application results and SF Symbols for interface
-  actions. Align icon bounds and text baselines. Avoid emoji as UI iconography.
+- Use native bundle icons for app and settings results; use SF Symbols for
+  interface actions and as an icon fallback. Align icon bounds and text
+  baselines. Avoid emoji as UI iconography.
 - Centralize typography, spacing, colors, radii, and motion in a small Swift
   theme/token definition. Do not scatter magic values through views.
 - Follow system light/dark appearance. Use semantic surface and text roles,
@@ -98,8 +99,8 @@ from precise execution of this direction; adding more features is not visual pol
 
 The fixture panel is 640 × 554 pt (clamped to available screen space), with
 54 pt rows and scrolling. An opaque system window surface follows appearance;
-material is deferred after focus-state contrast inspection. No animated layout
-means Reduce Motion requires no alternate transition. The selected row combines
+material is deferred after focus-state contrast inspection. Panel geometry does
+not animate; Reduce Motion disables result transitions. The selected row combines
 a restrained accent fill, a leading stripe, and a Return glyph. Paths truncate
 in the middle; full names and paths remain in accessibility labels and tooltips.
 A persistent Fixtures footer discloses development mode. Empty-query helper
@@ -128,7 +129,9 @@ against normal and selected surfaces in both appearances.
 Result rows show Rust-provided subtitles directly. App subtitles use the
 containing folder (for duplicate `IDLE` results, `Python 3.12` and `Python 3.13`);
 settings subtitles use their pane name, or `System Settings` for a pane result.
-Settings rows use a system-settings symbol, while apps retain their native icons.
+Settings rows use the icon from their System Settings pane bundle, while apps
+retain their native application icons. SF Symbols remain the fallback when a
+bundle icon is unavailable.
 The title is the best matching name for the destination. The full app path stays
 available to assistive technology; settings expose their title, pane, and kind.
 
@@ -141,3 +144,14 @@ stays visually quiet instead of showing an empty-state icon. Once the delay
 passes, the empty area identifies the ongoing search; quick searches do not
 flash a loading state. No-match and failure states retain separate symbols,
 messages, and retry behavior.
+
+## Query transition refinement — 2026-10-08
+
+Keep the current result rows and selected highlight in place while a changed
+query is searching. Disable actions during that interval so a visible result
+from the previous query cannot launch by mistake. When new results arrive,
+stable destination IDs let SwiftUI animate insertions, removals, and reordering
+with a brief fade. If the search lasts past the existing progress delay, gently
+dim the old rows while the search indicator is visible. Reduce Motion disables
+these transitions. A completed new query still resets selection to its first
+result; same-query refresh preserves a selected ID when it remains available.

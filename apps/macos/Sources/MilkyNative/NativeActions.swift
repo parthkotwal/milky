@@ -38,8 +38,17 @@ public final class NativeAppOpener: AppOpening {
 actor IconCache {
     static let shared = IconCache()
     private var images: [URL: Data] = [:]
+    private var settingsBundles: [String: URL]?
 
-    func data(for url: URL) async -> Data? {
+    func data(for result: AppResult) async -> Data? {
+        let url: URL?
+        switch result.action {
+        case .launch(let appURL):
+            url = appURL
+        case .openURL:
+            url = await settingsBundleURL(for: result.id)
+        }
+        guard let url else { return nil }
         if let cached = images[url] { return cached }
         let data = await Task.detached(priority: .utility) {
             guard FileManager.default.fileExists(atPath: url.path) else { return Data?.none }
@@ -59,5 +68,46 @@ actor IconCache {
         }.value
         if let data { images[url] = data }
         return data
+    }
+
+    private func settingsBundleURL(for resultID: String) async -> URL? {
+        guard resultID.hasPrefix("settings:") else { return nil }
+        let paneID = resultID.dropFirst("settings:".count).split(separator: "#", maxSplits: 1).first.map(String.init)
+        guard let paneID, !paneID.isEmpty else { return nil }
+        if settingsBundles == nil {
+            settingsBundles = await Task.detached(priority: .utility) {
+                Self.discoverSettingsBundles()
+            }.value
+        }
+        return settingsBundles?[paneID]
+    }
+
+    /// Mirrors the two system extension roots used by the Rust settings index.
+    /// The lookup happens once, off the UI thread, and is keyed by the pane ID
+    /// already present in each result.
+    private static func discoverSettingsBundles() -> [String: URL] {
+        let roots = [
+            URL(fileURLWithPath: "/System/Library/ExtensionKit/Extensions", isDirectory: true),
+            URL(fileURLWithPath: "/System/Applications/System Settings.app/Contents/PlugIns", isDirectory: true),
+        ]
+        var bundles: [String: URL] = [:]
+        for root in roots {
+            guard let children = try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ) else { continue }
+            for bundleURL in children where bundleURL.pathExtension == "appex" {
+                let infoURL = bundleURL.appendingPathComponent("Contents/Info.plist")
+                guard let data = try? Data(contentsOf: infoURL),
+                      let info = try? PropertyListSerialization.propertyList(from: data, format: nil),
+                      let dictionary = info as? [String: Any],
+                      let identifier = dictionary["CFBundleIdentifier"] as? String,
+                      let extensionAttributes = dictionary["EXAppExtensionAttributes"] as? [String: Any],
+                      extensionAttributes["EXExtensionPointIdentifier"] as? String == "com.apple.Settings.extension.ui",
+                      let settingsAttributes = extensionAttributes["SettingsExtensionAttributes"] as? [String: Any],
+                      settingsAttributes["allowsXAppleSystemPreferencesURLScheme"] as? Bool == true else { continue }
+                if bundles[identifier] == nil { bundles[identifier] = bundleURL }
+            }
+        }
+        return bundles
     }
 }

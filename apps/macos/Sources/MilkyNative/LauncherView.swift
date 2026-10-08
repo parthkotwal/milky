@@ -19,6 +19,7 @@ enum LauncherTheme {
 }
 
 public struct LauncherView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var state: LauncherState
     let dismiss: () -> Void
     let fixtures: Bool
@@ -44,7 +45,11 @@ public struct LauncherView: View {
             }
             .padding(LauncherTheme.inset)
             Divider()
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(state.showsProgress && !state.results.isEmpty ? 0.68 : 1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: state.results)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.14), value: state.showsProgress)
             if let error = state.errorMessage {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
@@ -97,14 +102,16 @@ public struct LauncherView: View {
                     Text(emptyTitle).font(.system(size: 16, weight: .medium))
                     Text(emptySubtitle)
                         .font(LauncherTheme.subtitle).foregroundStyle(LauncherTheme.secondary)
-                }.padding(24)
+                }
+                .padding(24)
+                .transition(.opacity)
             }
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(state.results) { result in
-                            row(result).id(result.id)
+                            row(result).id(result.id).transition(.opacity)
                         }
                     }.padding(8)
                 }
@@ -122,6 +129,7 @@ public struct LauncherView: View {
                         if let id = state.selectedID { proxy.scrollTo(id, anchor: .center) }
                     }
                 }
+                .transition(.opacity)
             }
         }
     }
@@ -198,8 +206,7 @@ private struct ResultIcon: View {
         }
         .frame(width: 32, height: 32).accessibilityHidden(true)
         .task(id: result.id) {
-            guard let url = result.launchURL else { image = nil; return }
-            if let data = await IconCache.shared.data(for: url), !Task.isCancelled {
+            if let data = await IconCache.shared.data(for: result), !Task.isCancelled {
                 image = NSImage(data: data)
             }
         }

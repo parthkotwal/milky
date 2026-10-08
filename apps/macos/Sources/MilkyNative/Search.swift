@@ -70,8 +70,8 @@ public struct FixtureSearchProvider: SearchProvider {
         app("Calendar", "/System/Applications/Calendar.app"),
         app("Notes", "/System/Applications/Notes.app"),
         app("TextEdit", "/System/Applications/TextEdit.app"),
-        setting("Wi-Fi", "System Settings", "x-apple.systempreferences:com.apple.wifi-settings-extension"),
-        setting("Advanced", "Wi-Fi", "x-apple.systempreferences:com.apple.wifi-settings-extension?Advanced"),
+        setting("settings:com.apple.wifi-settings-extension", "Wi-Fi", "System Settings", "x-apple.systempreferences:com.apple.wifi-settings-extension"),
+        setting("settings:com.apple.wifi-settings-extension#Advanced", "Advanced", "Wi-Fi", "x-apple.systempreferences:com.apple.wifi-settings-extension?Advanced"),
         app("IDLE", "/Applications/Python 3.12/IDLE.app"),
         app("IDLE", "/Applications/Python 3.13/IDLE.app"),
         app("Milky Research — A Very Long Application Name for Layout Inspection", "/tmp/Milky Fixtures/Research/An intentionally long parent directory/Application Previews/Milky Research.app"),
@@ -82,8 +82,8 @@ public struct FixtureSearchProvider: SearchProvider {
         AppResult(id: "app:\(path)", title: name, subtitle: URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent, action: .launch(URL(fileURLWithPath: path)))
     }
 
-    private static func setting(_ title: String, _ subtitle: String, _ url: String) -> AppResult {
-        AppResult(id: "settings:\(title)", kind: .setting, title: title, subtitle: subtitle, action: .openURL(URL(string: url)!))
+    private static func setting(_ id: String, _ title: String, _ subtitle: String, _ url: String) -> AppResult {
+        AppResult(id: id, kind: .setting, title: title, subtitle: subtitle, action: .openURL(URL(string: url)!))
     }
 
     public func search(query: String) async throws -> [AppResult] {

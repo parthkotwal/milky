@@ -57,7 +57,6 @@ public final class LauncherState {
         progress?.cancel()
         errorMessage = nil
         showsProgress = false
-        if resetSelection { results = []; selectedID = nil }
         guard active, allowEmpty || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             results = []; selectedID = nil; isSearching = false
             return
@@ -74,7 +73,7 @@ public final class LauncherState {
                 let values = try await provider.search(query: submitted)
                 guard let self, self.active, self.generation == token else { return }
                 self.results = values
-                if !values.contains(where: { $0.id == self.selectedID }) {
+                if resetSelection || !values.contains(where: { $0.id == self.selectedID }) {
                     self.selectedID = values.first?.id
                 }
                 self.finishSearch()

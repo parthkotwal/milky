@@ -185,3 +185,48 @@ App IDs must match their absolute launch path; setting actions need a URL scheme
 The opener launches or activates apps and opens settings links through
 `NSWorkspace`. Fixtures cover both kinds but still do not record usage. The
 shared contract is documented in `INTEGRATION.md` and the shared decision log.
+
+## 2026-10-08 — Keep results steady between keystrokes
+
+Decision: Keep the prior list and highlight visible while a new query is in
+flight, disable acting on those stale results, then animate the updated rows
+with a short fade. Dim the held list only after the delayed search indicator
+appears. Respect Reduce Motion by disabling result animation.
+
+Why: Clearing the list on every typed character makes the launcher look as if
+it flashes or reloads, even when search returns quickly. Holding the rows gives
+the eye a stable reference while subtle identity-based transitions reveal what
+changed. The existing generation guard still discards out-of-order responses.
+
+Alternatives: Clearing immediately is unambiguous but causes repeated blanking.
+A full-list crossfade or animated panel resize would be more noticeable and
+make the interface feel slower. Showing old rows as actionable risks launching
+for the wrong query, so opening stays gated until completion.
+
+Consequences: A new query chooses its first result after completion, even if
+that ID was selected for the previous query. Same-query refresh preserves the
+selection when possible. The offscreen snapshot harness can preload a previous
+query to inspect the held-results state without taking user focus.
+
+## 2026-10-08 — Resolve System Settings icons from pane bundles
+
+Decision: Use each setting result's pane bundle ID to find its installed
+ExtensionKit `.appex`, then request that bundle's icon through
+`NSWorkspace.icon(forFile:)`. Reuse the existing bounded off-main icon
+rasterization and cache. Keep the SF Symbol fallback for panes without a
+usable bundle icon.
+
+Why: Rust already supplies the pane bundle ID, and the macOS extension bundle
+contains the artwork used for that pane. `NSWorkspace` returns the pane-specific
+Wi-Fi and Network icons when given their `.appex` paths. This uses AppKit's
+public file-icon API instead of hardcoding artwork in Milky.
+
+Alternatives: A hardcoded SF Symbol gives every setting the same generic mark.
+Adding icon paths to the result payload would expand the Rust ↔ Swift contract
+for metadata that Swift can resolve locally.
+
+Consequences: Swift builds a one-time ID-to-bundle map from the same two system
+roots used by the Rust settings index. Lookup runs off the main thread and is
+cached with app icons. Missing bundles or icons retain the SF Symbol fallback;
+no Rust or ABI change is required. Apple API reference:
+https://developer.apple.com/documentation/appkit/nsworkspace/icon%28forfile%3A%29

@@ -62,7 +62,8 @@ private actor SelectionRecorder: SelectionEventRecording {
 
     func testDuplicateIdentityRefreshAndNewQuerySelection() async throws {
         let provider = ControlledSearch()
-        let state = LauncherState(provider: provider, opener: RecordingOpener())
+        let opener = RecordingOpener()
+        let state = LauncherState(provider: provider, opener: opener)
         state.setQuery("idle")
         try await waitFor { await provider.contains("idle") }
         await provider.succeed("idle", [first, second])
@@ -78,7 +79,11 @@ private actor SelectionRecorder: SelectionEventRecording {
         try await waitFor { !state.isSearching }
         XCTAssertEqual(state.selectedID, "app:/two/IDLE.app")
         state.setQuery("different")
-        XCTAssertNil(state.selectedID)
+        XCTAssertEqual(state.results, [second, first], "Keep the current rows visible until the new query arrives")
+        XCTAssertEqual(state.selectedID, second.id, "Keep the current highlight stable during the refresh")
+        XCTAssertFalse(state.canOpen, "A stale result must not launch for the new query")
+        await state.openSelected()
+        XCTAssertTrue(opener.opened.isEmpty)
         try await waitFor { await provider.contains("different") }
         await provider.succeed("different", [first, second])
         try await waitFor { !state.isSearching }
@@ -146,14 +151,48 @@ private actor SelectionRecorder: SelectionEventRecording {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw XCTSkip("Calculator is unavailable on this host")
         }
-        let data = await IconCache.shared.data(for: url)
+        let app = AppResult(id: "app:\(url.path)", title: "Calculator", action: .launch(url))
+        let data = await IconCache.shared.data(for: app)
         let unwrapped = try XCTUnwrap(data)
         let image = try XCTUnwrap(NSBitmapImageRep(data: unwrapped))
         XCTAssertEqual(image.pixelsWide, 64)
         XCTAssertEqual(image.pixelsHigh, 64)
         XCTAssertLessThan(unwrapped.count, 100_000)
-        let missing = await IconCache.shared.data(for: URL(fileURLWithPath: "/tmp/Milky Fixtures/DoesNotExist.app"))
+        let missingURL = URL(fileURLWithPath: "/tmp/Milky Fixtures/DoesNotExist.app")
+        let missingApp = AppResult(id: "app:\(missingURL.path)", title: "Missing", action: .launch(missingURL))
+        let missing = await IconCache.shared.data(for: missingApp)
         XCTAssertNil(missing)
+    }
+
+    func testSettingsResultUsesItsSystemPaneIcon() async throws {
+        let bundle = URL(fileURLWithPath: "/System/Library/ExtensionKit/Extensions/Wi-Fi.appex")
+        guard FileManager.default.fileExists(atPath: bundle.path) else {
+            throw XCTSkip("Wi-Fi settings pane is unavailable on this host")
+        }
+        let result = AppResult(
+            id: "settings:com.apple.wifi-settings-extension#Advanced",
+            kind: .setting,
+            title: "Advanced",
+            subtitle: "Wi-Fi",
+            action: .openURL(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension?Advanced")!)
+        )
+        let iconData = await IconCache.shared.data(for: result)
+        let data = try XCTUnwrap(iconData)
+        let image = try XCTUnwrap(NSBitmapImageRep(data: data))
+        XCTAssertEqual(image.pixelsWide, 64)
+        XCTAssertEqual(image.pixelsHigh, 64)
+        XCTAssertLessThan(data.count, 100_000)
+
+        let network = AppResult(
+            id: "settings:com.apple.Network-Settings.extension",
+            kind: .setting,
+            title: "Network",
+            subtitle: "System Settings",
+            action: .openURL(URL(string: "x-apple.systempreferences:com.apple.Network-Settings.extension")!)
+        )
+        let networkIconData = await IconCache.shared.data(for: network)
+        let networkData = try XCTUnwrap(networkIconData)
+        XCTAssertNotEqual(data, networkData, "Each pane should resolve its own bundle artwork")
     }
 
     func testRemovedSelectionAndLateErrorDoNotCorruptCurrentResults() async throws {
