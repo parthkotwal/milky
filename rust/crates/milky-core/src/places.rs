@@ -39,22 +39,58 @@ pub struct PlaceSpec {
 /// out: Finder's Applications already shows their apps, and three results named
 /// "Applications" would be noise.
 pub const PLACES: &[PlaceSpec] = &[
-    PlaceSpec { location: Location::Home, aliases: &["Home"] },
-    PlaceSpec { location: Location::InHome("Desktop"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Documents"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Downloads"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Movies"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Music"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Pictures"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Public"), aliases: &[] },
-    PlaceSpec { location: Location::InHome("Library"), aliases: &[] },
-    PlaceSpec { location: Location::InHome(".Trash"), aliases: &["Bin", "Recycle Bin"] },
+    PlaceSpec {
+        location: Location::Home,
+        aliases: &["Home"],
+    },
+    PlaceSpec {
+        location: Location::InHome("Desktop"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Documents"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Downloads"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Movies"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Music"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Pictures"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Public"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome("Library"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::InHome(".Trash"),
+        aliases: &["Bin", "Recycle Bin"],
+    },
     PlaceSpec {
         location: Location::InHome(crate::candidate::ICLOUD_DRIVE),
         aliases: &["iCloud"],
     },
-    PlaceSpec { location: Location::Absolute("/Applications"), aliases: &[] },
-    PlaceSpec { location: Location::Absolute("/Applications/Utilities"), aliases: &[] },
+    PlaceSpec {
+        location: Location::Absolute("/Applications"),
+        aliases: &[],
+    },
+    PlaceSpec {
+        location: Location::Absolute("/Applications/Utilities"),
+        aliases: &[],
+    },
 ];
 
 /// A well-known place that exists on this Mac.
@@ -80,7 +116,11 @@ pub fn place(spec: &PlaceSpec, home: &Path) -> Option<Place> {
             .unwrap_or_default()
     });
     let aliases = spec.aliases.iter().map(|alias| alias.to_string()).collect();
-    Some(Place { path, name, aliases })
+    Some(Place {
+        path,
+        name,
+        aliases,
+    })
 }
 
 /// Every place in [`PLACES`] that exists on this Mac, in table order.
@@ -96,9 +136,18 @@ mod tests {
     #[test]
     fn locations_resolve_against_the_home_folder() {
         let home = Path::new("/Users/someone");
-        assert_eq!(Location::Home.resolve(home), PathBuf::from("/Users/someone"));
-        assert_eq!(Location::InHome("Downloads").resolve(home), PathBuf::from("/Users/someone/Downloads"));
-        assert_eq!(Location::Absolute("/Applications").resolve(home), PathBuf::from("/Applications"));
+        assert_eq!(
+            Location::Home.resolve(home),
+            PathBuf::from("/Users/someone")
+        );
+        assert_eq!(
+            Location::InHome("Downloads").resolve(home),
+            PathBuf::from("/Users/someone/Downloads")
+        );
+        assert_eq!(
+            Location::Absolute("/Applications").resolve(home),
+            PathBuf::from("/Applications")
+        );
     }
 
     #[test]
@@ -106,7 +155,10 @@ mod tests {
         // `home.join("")` would give "/Users/someone/", a different string, and
         // so a different result ID from the same folder found by a file walk.
         let home = Path::new("/Users/someone");
-        assert_eq!(Location::Home.resolve(home).to_str(), Some("/Users/someone"));
+        assert_eq!(
+            Location::Home.resolve(home).to_str(),
+            Some("/Users/someone")
+        );
     }
 
     #[test]
@@ -114,16 +166,25 @@ mod tests {
         let home = std::env::temp_dir().join(format!("milky-places-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join("Downloads")).unwrap();
-        let paths: Vec<PathBuf> = discover_places(&home).into_iter().map(|place| place.path).collect();
+        let paths: Vec<PathBuf> = discover_places(&home)
+            .into_iter()
+            .map(|place| place.path)
+            .collect();
         assert!(paths.contains(&home.join("Downloads")));
-        assert!(!paths.contains(&home.join("Movies")), "no Movies folder here");
+        assert!(
+            !paths.contains(&home.join("Movies")),
+            "no Movies folder here"
+        );
         assert!(paths.contains(&PathBuf::from("/Applications")));
     }
 
     #[test]
     fn every_place_is_a_different_folder() {
         let home = Path::new("/Users/someone");
-        let paths: HashSet<PathBuf> = PLACES.iter().map(|spec| spec.location.resolve(home)).collect();
+        let paths: HashSet<PathBuf> = PLACES
+            .iter()
+            .map(|spec| spec.location.resolve(home))
+            .collect();
         assert_eq!(paths.len(), PLACES.len());
     }
 
@@ -131,10 +192,18 @@ mod tests {
     fn real_places_are_named_by_finder() {
         let home = std::env::home_dir().unwrap();
         let places = discover_places(&home);
-        let named = |path: PathBuf| places.iter().find(|place| place.path == path).map(|place| place.name.as_str());
+        let named = |path: PathBuf| {
+            places
+                .iter()
+                .find(|place| place.path == path)
+                .map(|place| place.name.as_str())
+        };
         assert_eq!(named(home.join(".Trash")), Some("Trash"));
         assert_eq!(named(home.join("Downloads")), Some("Downloads"));
-        assert_eq!(named(PathBuf::from("/Applications/Utilities")), Some("Utilities"));
+        assert_eq!(
+            named(PathBuf::from("/Applications/Utilities")),
+            Some("Utilities")
+        );
         let trash = places.iter().find(|place| place.name == "Trash").unwrap();
         assert_eq!(trash.aliases, vec!["Bin", "Recycle Bin"]);
     }

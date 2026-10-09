@@ -104,7 +104,20 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          shown. Verified on screen: opening `~/.Trash` by path shows Finder's
          Trash (with Empty); `/Applications/Utilities` shows the merged system
          utilities. Swift adapter v4 is wired (see `swift/INTEGRATION.md`).
-      3. [ ] Files in search: path-aware matching (`332 ex01` ->
+      3. [ ] Files in search. Agreed 2026-10-08: a file or folder needs a
+         strong (word-level) match on its own name; parent-folder words and
+         the extension only support it; equal strength ranks apps > places >
+         settings > folders > files; recency (modified date) among files;
+         rank everything, then cap files (best k, more only if nothing else
+         fills the list). Beats: 3a word splitting [x] (punctuation, letter/
+         digit, joined pieces kept: `v2`, `cse332`); 3c file/folder
+         candidates [x] (`from_file`, `FileFacts`: folder words below iCloud
+         Drive or home, extension, modified; walked places and apps not
+         repeated; not in the engine yet; build of ~23k takes ~140 ms,
+         folder words recomputed per file, cacheable per folder); 3b match
+         rule [ ] (user); 3d top-k + cap + order [ ] (user); 3e engine
+         wiring, tests, docs [ ].
+         Original sketch: path-aware matching (`332 ex01` ->
          `school/cse332/ex01.pdf`), file ranking (match, usage, recency,
          location, folder vs file) tuned on a query set; top-k selection.
       4. [ ] Background indexing: startup unchanged, files arrive after.

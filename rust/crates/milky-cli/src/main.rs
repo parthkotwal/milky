@@ -57,10 +57,23 @@ fn main() -> ExitCode {
         let started = Instant::now();
         let panes = milky_core::settings::discover_settings();
         let items: usize = panes.iter().map(|pane| pane.items.len()).sum();
-        eprintln!("read {} panes, {items} items in {:.1?}", panes.len(), started.elapsed());
+        eprintln!(
+            "read {} panes, {items} items in {:.1?}",
+            panes.len(),
+            started.elapsed()
+        );
         for pane in &panes {
-            let hidden = if pane.in_sidebar { "" } else { "  (not in sidebar)" };
-            println!("{:<34} {:>3} items  {}{hidden}", pane.name, pane.items.len(), pane.id);
+            let hidden = if pane.in_sidebar {
+                ""
+            } else {
+                "  (not in sidebar)"
+            };
+            println!(
+                "{:<34} {:>3} items  {}{hidden}",
+                pane.name,
+                pane.items.len(),
+                pane.id
+            );
         }
         return ExitCode::SUCCESS;
     }
@@ -259,7 +272,9 @@ fn list_files() -> ExitCode {
     let mut sizes: HashMap<PathBuf, usize> = HashMap::new();
     for entry in &walk.entries {
         let relative = entry.path.strip_prefix(&home).unwrap_or(&entry.path);
-        *sizes.entry(relative.components().take(2).collect()).or_default() += 1;
+        *sizes
+            .entry(relative.components().take(2).collect())
+            .or_default() += 1;
     }
     let mut largest: Vec<(PathBuf, usize)> = sizes.into_iter().collect();
     largest.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -283,15 +298,26 @@ fn load_exclusions(home: &Path) -> Exclusions {
     let existed = path.exists();
     match files::load_exclusions(&path, home) {
         Ok((rules, ignored)) => {
-            let created = if existed { "" } else { ", just created with the defaults" };
-            println!("exclusions: {} ({} rules{created})", tilde(&path, home), rules.len());
+            let created = if existed {
+                ""
+            } else {
+                ", just created with the defaults"
+            };
+            println!(
+                "exclusions: {} ({} rules{created})",
+                tilde(&path, home),
+                rules.len()
+            );
             for line in &ignored {
                 println!("  ignored line, not a name or a path: {line}");
             }
             rules
         }
         Err(err) => {
-            println!("exclusions: {}: {err}; using the defaults", tilde(&path, home));
+            println!(
+                "exclusions: {}: {err}; using the defaults",
+                tilde(&path, home)
+            );
             Exclusions::defaults(home)
         }
     }

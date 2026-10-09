@@ -43,9 +43,12 @@ pub fn match_kind(name: &str, query: &str) -> Option<MatchKind> {
 pub struct NameKey {
     /// The whole name, normalized: `"Café Bar"` -> `"cafe bar"`.
     folded: String,
-    /// Folded words: whitespace-separated words, plus their camelCase parts
-    /// when there are several. `"ColorSync Utility"` ->
-    /// `["color", "sync", "colorsync", "utility"]`.
+    /// Folded words: each whitespace-separated token split into its parts (at
+    /// punctuation, between letters and digits, and at camelCase), plus each
+    /// punctuation-separated piece and the whole token joined back together.
+    /// `"ColorSync Utility"` -> `["color", "sync", "colorsync", "utility"]`;
+    /// `"final-report_v2.pdf"` -> `["final", "report", "v", "2", "pdf", "v2",
+    /// "finalreportv2pdf"]`.
     words: Vec<String>,
     /// First letter of each whitespace-separated word: `"ColorSync Utility"` -> `"cu"`.
     initials: String,
@@ -54,24 +57,39 @@ pub struct NameKey {
 }
 
 impl NameKey {
+    /// The name's folded words; see the field's documentation.
+    pub fn words(&self) -> &[String] {
+        &self.words
+    }
+
     pub fn new(name: &str) -> Self {
         let mut words = Vec::new();
         let mut camel_initials = String::new();
         for token in name.split_whitespace() {
-            let parts = camel_parts(token);
-            for part in &parts {
-                let folded = fold(part);
-                if let Some(first) = folded.chars().next() {
-                    camel_initials.push(first);
+            // Every part, then each punctuation-separated piece joined back
+            // (`v2`, `cse332`, `colorsync`), then the whole token joined
+            // (`wifi` for "Wi-Fi"): people type any of these.
+            let mut token_words: Vec<String> = Vec::new();
+            let mut joins: Vec<String> = Vec::new();
+            for piece in punctuation_pieces(token) {
+                let parts: Vec<String> = piece_parts(piece)
+                    .into_iter()
+                    .map(fold)
+                    .filter(|part| !part.is_empty())
+                    .collect();
+                if parts.len() > 1 {
+                    joins.push(parts.concat());
                 }
-                if parts.len() > 1 && !folded.is_empty() {
-                    words.push(folded);
+                token_words.extend(parts);
+            }
+            camel_initials.extend(token_words.iter().filter_map(|part| part.chars().next()));
+            joins.push(token_words.concat());
+            for join in joins {
+                if !join.is_empty() && !token_words.contains(&join) {
+                    token_words.push(join);
                 }
             }
-            let folded = fold(token);
-            if !folded.is_empty() {
-                words.push(folded);
-            }
+            words.extend(token_words);
         }
         Self {
             folded: crate::normalize_query(name),
@@ -129,7 +147,10 @@ pub fn keyword_match(words: &[String], query: &str) -> Option<KeywordMatch> {
     if query.is_empty() {
         return None;
     }
-    if query.split(' ').all(|part| words.iter().any(|word| word == part)) {
+    if query
+        .split(' ')
+        .all(|part| words.iter().any(|word| word == part))
+    {
         return Some(KeywordMatch::Complete);
     }
     if all_words_start(words, query) {
@@ -143,7 +164,9 @@ pub fn keyword_match(words: &[String], query: &str) -> Option<KeywordMatch> {
 /// `"mac addr"` against `["wifi", "mac", "address"]` is true, in any order.
 /// A one-word query asks whether any word starts with it.
 pub fn all_words_start(words: &[String], query: &str) -> bool {
-    query.split(' ').all(|part| words.iter().any(|word| word.starts_with(part)))
+    query
+        .split(' ')
+        .all(|part| words.iter().any(|word| word.starts_with(part)))
 }
 
 /// The folded words of `text`, as matching sees them, camelCase parts
@@ -176,6 +199,43 @@ pub fn word_initials(name: &str) -> String {
     name.split_whitespace()
         .filter_map(|word| fold(word).chars().next())
         .collect()
+}
+
+/// `token` split at punctuation and symbols, empty pieces dropped:
+/// `final-report_v2.pdf` -> `final`, `report`, `v2`, `pdf`; `(Head` -> `Head`.
+/// Accents written as separate combining marks stay with their letter.
+fn punctuation_pieces(token: &str) -> impl Iterator<Item = &str> {
+    token
+        .split(|c: char| !c.is_alphanumeric() && !is_combining_mark(c))
+        .filter(|piece| !piece.is_empty())
+}
+
+/// One punctuation-free piece split between letters and digits, then at
+/// camelCase boundaries: `cse332` -> `cse`, `332`; `iPhone15` -> `i`, `Phone`,
+/// `15`.
+fn piece_parts(piece: &str) -> Vec<&str> {
+    digit_parts(piece)
+        .into_iter()
+        .flat_map(camel_parts)
+        .collect()
+}
+
+/// Split at every change between digits and non-digits: `ex01` -> `ex`, `01`;
+/// `3D` -> `3`, `D`.
+fn digit_parts(piece: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut previous_is_digit = None;
+    for (index, c) in piece.char_indices() {
+        let is_digit = c.is_numeric();
+        if previous_is_digit.is_some_and(|previous| previous != is_digit) {
+            parts.push(&piece[start..index]);
+            start = index;
+        }
+        previous_is_digit = Some(is_digit);
+    }
+    parts.push(&piece[start..]);
+    parts
 }
 
 /// Split one whitespace-free token at camelCase boundaries.
@@ -248,19 +308,43 @@ mod tests {
 
     #[test]
     fn every_query_word_must_start_a_word() {
-        assert_eq!(match_kind("Wi-Fi MAC Address", "mac address"), Some(MatchKind::WordPrefix));
-        assert_eq!(match_kind("Wi-Fi MAC Address", "address mac"), Some(MatchKind::WordPrefix));
-        assert_eq!(match_kind("Wi-Fi MAC Address", "mac addr"), Some(MatchKind::WordPrefix));
-        assert_eq!(match_kind("Turn off display when inactive", "turn display"), Some(MatchKind::WordPrefix));
-        assert_ne!(match_kind("Wi-Fi MAC Address", "mac phone"), Some(MatchKind::WordPrefix));
+        assert_eq!(
+            match_kind("Wi-Fi MAC Address", "mac address"),
+            Some(MatchKind::WordPrefix)
+        );
+        assert_eq!(
+            match_kind("Wi-Fi MAC Address", "address mac"),
+            Some(MatchKind::WordPrefix)
+        );
+        assert_eq!(
+            match_kind("Wi-Fi MAC Address", "mac addr"),
+            Some(MatchKind::WordPrefix)
+        );
+        assert_eq!(
+            match_kind("Turn off display when inactive", "turn display"),
+            Some(MatchKind::WordPrefix)
+        );
+        assert_ne!(
+            match_kind("Wi-Fi MAC Address", "mac phone"),
+            Some(MatchKind::WordPrefix)
+        );
     }
 
     #[test]
     fn whole_keywords_are_complete_matches() {
-        let words: Vec<String> = ["MAC address", "Dark Mode"].iter().flat_map(|k| words_of(k)).collect();
-        assert_eq!(keyword_match(&words, "mac address"), Some(KeywordMatch::Complete));
+        let words: Vec<String> = ["MAC address", "Dark Mode"]
+            .iter()
+            .flat_map(|k| words_of(k))
+            .collect();
+        assert_eq!(
+            keyword_match(&words, "mac address"),
+            Some(KeywordMatch::Complete)
+        );
         assert_eq!(keyword_match(&words, "dark"), Some(KeywordMatch::Complete));
-        assert_eq!(keyword_match(&words, "mode dark"), Some(KeywordMatch::Complete));
+        assert_eq!(
+            keyword_match(&words, "mode dark"),
+            Some(KeywordMatch::Complete)
+        );
     }
 
     #[test]
@@ -272,17 +356,27 @@ mod tests {
 
     #[test]
     fn every_query_word_must_be_a_keyword() {
-        let words: Vec<String> = ["camera", "privacy"].iter().flat_map(|k| words_of(k)).collect();
+        let words: Vec<String> = ["camera", "privacy"]
+            .iter()
+            .flat_map(|k| words_of(k))
+            .collect();
         assert_eq!(keyword_match(&words, "camera microphone"), None);
-        assert_eq!(keyword_match(&words, "amera"), None, "keywords match from the start of a word");
+        assert_eq!(
+            keyword_match(&words, "amera"),
+            None,
+            "keywords match from the start of a word"
+        );
         assert_eq!(keyword_match(&words, ""), None);
     }
 
     #[test]
     fn keyword_words_are_folded_and_split() {
         assert_eq!(words_of("AirDrop"), vec!["air", "drop", "airdrop"]);
-        assert_eq!(words_of("Wi‑Fi"), vec!["wifi"]);
-        assert_eq!(keyword_match(&words_of("Wi‑Fi"), "wifi"), Some(KeywordMatch::Complete));
+        assert_eq!(words_of("Wi‑Fi"), vec!["wi", "fi", "wifi"]);
+        assert_eq!(
+            keyword_match(&words_of("Wi‑Fi"), "wifi"),
+            Some(KeywordMatch::Complete)
+        );
     }
 
     #[test]
@@ -450,6 +544,68 @@ mod tests {
         assert_eq!(camel_parts("zoom.us"), vec!["zoom.us"]);
     }
 
+    /// Every part of a token, in order.
+    fn word_parts(token: &str) -> Vec<&str> {
+        punctuation_pieces(token).flat_map(piece_parts).collect()
+    }
+
+    #[test]
+    fn word_parts_split_at_punctuation_digits_and_case() {
+        assert_eq!(
+            word_parts("final-report_v2.pdf"),
+            vec!["final", "report", "v", "2", "pdf"]
+        );
+        assert_eq!(word_parts("cse332"), vec!["cse", "332"]);
+        assert_eq!(word_parts("ex01.pdf"), vec!["ex", "01", "pdf"]);
+        assert_eq!(word_parts("(Head"), vec!["Head"]);
+        assert_eq!(word_parts("iPhone15"), vec!["i", "Phone", "15"]);
+        assert_eq!(word_parts("zoom.us"), vec!["zoom", "us"]);
+        assert_eq!(word_parts("--"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn combining_accents_stay_with_their_letter() {
+        // "Café" written as "Cafe" + U+0301 COMBINING ACUTE ACCENT.
+        assert_eq!(word_parts("Cafe\u{301}-Bar"), vec!["Cafe\u{301}", "Bar"]);
+    }
+
+    #[test]
+    fn file_names_match_at_every_part() {
+        for query in [
+            "final",
+            "report",
+            "v2",
+            "pdf",
+            "finalreport",
+            "final report",
+        ] {
+            assert!(
+                match_kind("final-report_v2.pdf", query)
+                    .is_some_and(|kind| kind >= MatchKind::WordPrefix),
+                "{query}"
+            );
+        }
+        assert_eq!(match_kind("cse332", "332"), Some(MatchKind::WordPrefix));
+        assert_eq!(
+            match_kind("Camera Options (Head pointer)", "head"),
+            Some(MatchKind::WordPrefix)
+        );
+        assert_eq!(match_kind("Wi‑Fi", "wifi"), Some(MatchKind::Exact));
+    }
+
+    #[test]
+    fn parts_pieces_and_the_whole_token_are_all_words() {
+        assert_eq!(
+            words_of("final-report_v2.pdf"),
+            vec!["final", "report", "v", "2", "pdf", "v2", "finalreportv2pdf"]
+        );
+        assert_eq!(words_of("Safari"), vec!["safari"], "one part is one word");
+        assert_eq!(
+            words_of("ColorSync Utility"),
+            vec!["color", "sync", "colorsync", "utility"]
+        );
+    }
+
     #[test]
     fn camel_case_initials_form_acronyms() {
         assert_eq!(
@@ -510,13 +666,21 @@ mod tests {
         // Apple's "Wi‑Fi" uses U+2011, a non-breaking hyphen.
         let apple = "Wi\u{2011}Fi";
         assert_eq!(match_kind(apple, "wifi"), Some(MatchKind::Exact));
-        assert_eq!(match_kind(apple, &crate::normalize_query("wi-fi")), Some(MatchKind::Exact));
-        assert_eq!(match_kind("Wi-Fi MAC Address", "wifi"), Some(MatchKind::Prefix));
+        assert_eq!(
+            match_kind(apple, &crate::normalize_query("wi-fi")),
+            Some(MatchKind::Exact)
+        );
+        assert_eq!(
+            match_kind("Wi-Fi MAC Address", "wifi"),
+            Some(MatchKind::Prefix)
+        );
     }
 
     #[test]
     fn every_dash_form_folds_away() {
-        for dash in ["-", "\u{2010}", "\u{2011}", "\u{2013}", "\u{2014}", "\u{2212}", "\u{FF0D}"] {
+        for dash in [
+            "-", "\u{2010}", "\u{2011}", "\u{2013}", "\u{2014}", "\u{2212}", "\u{FF0D}",
+        ] {
             assert_eq!(fold(&format!("e{dash}mail")), "email", "{dash:?}");
         }
     }

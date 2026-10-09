@@ -7,8 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::matching::MatchKind;
 use crate::candidate::{Action, Kind};
+use crate::matching::MatchKind;
 use crate::search::Hit;
 
 /// A request from a client. Tagged by `"op"`: `{"op":"search", ...}`.
@@ -70,7 +70,8 @@ pub enum WireKind {
     App,
     Setting,
     Folder,
-    /// Not produced yet; file search arrives in the same contract (v4).
+    /// Not produced yet: files join the engine once file matching is gated
+    /// (contract v4 already defines them).
     File,
 }
 
@@ -80,10 +81,16 @@ pub enum WireKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireAction {
-    Launch { path: String },
-    OpenUrl { url: String },
+    Launch {
+        path: String,
+    },
+    OpenUrl {
+        url: String,
+    },
     /// Open a file or folder in its default app (Finder for folders).
-    Open { path: String },
+    Open {
+        path: String,
+    },
 }
 
 /// Match kind as clients see it: a stable name, never a number.
@@ -98,6 +105,9 @@ pub enum WireMatchKind {
     Subsequence,
     /// Only the destination's keywords matched, not its title.
     Keyword,
+    /// A file's name matched part of the query and its folders or extension
+    /// matched the rest.
+    Path,
 }
 
 #[derive(Debug, Serialize)]
@@ -196,7 +206,8 @@ impl From<Kind> for WireKind {
         match kind {
             Kind::App => WireKind::App,
             Kind::Setting => WireKind::Setting,
-            Kind::Place => WireKind::Folder,
+            Kind::Place | Kind::Folder => WireKind::Folder,
+            Kind::File => WireKind::File,
         }
     }
 }
@@ -209,9 +220,13 @@ impl From<Kind> for WireKind {
 pub fn result_item(hit: &Hit) -> Option<ResultItem> {
     let candidate = hit.candidate;
     let action = match &candidate.action {
-        Action::Launch(path) => WireAction::Launch { path: path.to_str()?.to_string() },
+        Action::Launch(path) => WireAction::Launch {
+            path: path.to_str()?.to_string(),
+        },
         Action::OpenUrl(url) => WireAction::OpenUrl { url: url.clone() },
-        Action::Open(path) => WireAction::Open { path: path.to_str()?.to_string() },
+        Action::Open(path) => WireAction::Open {
+            path: path.to_str()?.to_string(),
+        },
     };
     Some(ResultItem {
         id: candidate.id.clone(),
@@ -219,7 +234,11 @@ pub fn result_item(hit: &Hit) -> Option<ResultItem> {
         title: hit.title.to_string(),
         subtitle: candidate.subtitle.clone(),
         action,
-        match_kind: hit.kind.map_or(WireMatchKind::Keyword, WireMatchKind::from),
+        match_kind: match hit.kind {
+            Some(kind) => kind.into(),
+            None if hit.candidate.file.is_some() => WireMatchKind::Path,
+            None => WireMatchKind::Keyword,
+        },
     })
 }
 
@@ -282,7 +301,10 @@ mod tests {
 
     #[test]
     fn an_app_hit_becomes_a_launch_result() {
-        let app = App::new(PathBuf::from("/Applications/Python 3.12/IDLE.app"), "IDLE".into());
+        let app = App::new(
+            PathBuf::from("/Applications/Python 3.12/IDLE.app"),
+            "IDLE".into(),
+        );
         let candidate = crate::candidate::from_app(&app).unwrap();
         let item = result_item(&hit_for(&candidate)).expect("utf-8 path");
         assert_eq!(
@@ -332,7 +354,8 @@ mod tests {
             name: "Downloads".into(),
             aliases: vec![],
         };
-        let candidate = crate::candidate::from_place(&place, std::path::Path::new("/Users/someone")).unwrap();
+        let candidate =
+            crate::candidate::from_place(&place, std::path::Path::new("/Users/someone")).unwrap();
         let item = result_item(&hit_for(&candidate)).unwrap();
         assert_eq!(
             serde_json::to_value(&item).unwrap(),
@@ -342,6 +365,29 @@ mod tests {
                 "title": "Downloads",
                 "subtitle": "~/Downloads",
                 "action": {"type": "open", "path": "/Users/someone/Downloads"},
+                "match_kind": "exact"
+            })
+        );
+    }
+
+    #[test]
+    fn a_file_hit_becomes_a_file_result() {
+        let entry = crate::files::FileEntry {
+            path: PathBuf::from("/Users/someone/notes/todo.txt"),
+            is_folder: false,
+            modified: None,
+        };
+        let candidate =
+            crate::candidate::from_file(&entry, std::path::Path::new("/Users/someone")).unwrap();
+        let item = result_item(&hit_for(&candidate)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&item).unwrap(),
+            serde_json::json!({
+                "id": "file:/Users/someone/notes/todo.txt",
+                "kind": "file",
+                "title": "todo.txt",
+                "subtitle": "~/notes",
+                "action": {"type": "open", "path": "/Users/someone/notes/todo.txt"},
                 "match_kind": "exact"
             })
         );
@@ -358,6 +404,7 @@ mod tests {
             action: Action::Launch(path),
             names: vec![crate::candidate::Name::new("Broken")],
             keywords: Vec::new(),
+            file: None,
         };
         assert!(result_item(&hit_for(&candidate)).is_none());
     }
@@ -400,7 +447,10 @@ mod tests {
         assert_eq!(event.validate(), Ok(()));
         let section = "settings:com.apple.wifi-settings-extension#Advanced";
         assert_eq!(selection(section, &[section]).validate(), Ok(()));
-        for id in ["folder:/Users/someone/Downloads", "file:/Users/someone/notes.txt"] {
+        for id in [
+            "folder:/Users/someone/Downloads",
+            "file:/Users/someone/notes.txt",
+        ] {
             assert_eq!(selection(id, &[id]).validate(), Ok(()), "{id}");
         }
     }
@@ -421,8 +471,19 @@ mod tests {
 
     #[test]
     fn only_result_ids_are_accepted() {
-        for bad in ["/A.app", "app:A.app", "settings:", "settings:#Advanced", "files:/A", "A.app", "folder:Downloads"] {
-            assert!(selection(bad, &[bad]).validate().is_err(), "{bad} should be rejected");
+        for bad in [
+            "/A.app",
+            "app:A.app",
+            "settings:",
+            "settings:#Advanced",
+            "files:/A",
+            "A.app",
+            "folder:Downloads",
+        ] {
+            assert!(
+                selection(bad, &[bad]).validate().is_err(),
+                "{bad} should be rejected"
+            );
         }
     }
 

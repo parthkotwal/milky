@@ -7,8 +7,10 @@
 //! `exclusions.txt`.
 
 use std::ffi::OsStr;
+use std::fs::Metadata;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::storage::{self, StorageError};
 
@@ -18,6 +20,8 @@ pub struct FileEntry {
     pub path: PathBuf,
     /// A folder Finder opens into. Packages are files: they open as documents.
     pub is_folder: bool,
+    /// When the contents last changed, if the filesystem says.
+    pub modified: Option<SystemTime>,
 }
 
 /// Everything one or more walks found.
@@ -126,7 +130,10 @@ pub fn exclusions_path() -> Result<PathBuf, StorageError> {
 /// is created with [`DEFAULT_EXCLUSIONS`] first, so the defaults are visible
 /// and editable. On error, callers should fall back to
 /// [`Exclusions::defaults`]: a broken file must not mean indexing everything.
-pub fn load_exclusions(path: &Path, home: &Path) -> Result<(Exclusions, Vec<String>), StorageError> {
+pub fn load_exclusions(
+    path: &Path,
+    home: &Path,
+) -> Result<(Exclusions, Vec<String>), StorageError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -163,22 +170,36 @@ pub fn walk(root: &Path, exclusions: &Exclusions) -> Walk {
             let Ok(file_type) = child.file_type() else {
                 continue;
             };
+            if !file_type.is_dir() && !file_type.is_file() {
+                continue;
+            }
+            // One `lstat` per entry, for both the hidden flag and recency.
+            let metadata = child.metadata().ok();
+            if metadata.as_ref().is_some_and(has_hidden_flag) {
+                continue;
+            }
+            let modified = metadata.and_then(|metadata| metadata.modified().ok());
             let path = child.path();
 
             if file_type.is_dir() {
-                let skipped = exclusions.excludes(&path, &name)
-                    || has_hidden_flag(&child)
-                    || has_generated_marker(&path);
-                if skipped {
+                if exclusions.excludes(&path, &name) || has_generated_marker(&path) {
                     continue;
                 }
                 let is_folder = !is_package(&path);
                 if is_folder {
                     pending.push(path.clone());
                 }
-                found.entries.push(FileEntry { path, is_folder });
-            } else if file_type.is_file() {
-                found.entries.push(FileEntry { path, is_folder: false });
+                found.entries.push(FileEntry {
+                    path,
+                    is_folder,
+                    modified,
+                });
+            } else {
+                found.entries.push(FileEntry {
+                    path,
+                    is_folder: false,
+                    modified,
+                });
             }
         }
     }
@@ -188,7 +209,10 @@ pub fn walk(root: &Path, exclusions: &Exclusions) -> Walk {
 /// The folders a walk starts from: the home folder and iCloud Drive (which
 /// lives inside the hidden `~/Library`, so the home walk never reaches it).
 pub fn roots(home: &Path) -> Vec<PathBuf> {
-    vec![home.to_path_buf(), home.join("Library/Mobile Documents/com~apple~CloudDocs")]
+    vec![
+        home.to_path_buf(),
+        home.join("Library/Mobile Documents/com~apple~CloudDocs"),
+    ]
 }
 
 /// Everything under [`roots`], minus `exclusions`.
@@ -208,18 +232,17 @@ fn is_dot_name(name: &OsStr) -> bool {
 }
 
 /// Finder also hides items with the `UF_HIDDEN` flag; that is how
-/// `~/Library` is hidden. Checked for folders only: hidden files without a
-/// dot are rare, and reading flags costs a system call per item.
-fn has_hidden_flag(entry: &std::fs::DirEntry) -> bool {
+/// `~/Library` is hidden.
+fn has_hidden_flag(metadata: &Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
     const UF_HIDDEN: u32 = 0x8000;
-    entry
-        .metadata()
-        .is_ok_and(|metadata| metadata.st_flags() & UF_HIDDEN != 0)
+    metadata.st_flags() & UF_HIDDEN != 0
 }
 
 fn has_generated_marker(dir: &Path) -> bool {
-    GENERATED_MARKERS.iter().any(|marker| dir.join(marker).exists())
+    GENERATED_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
 }
 
 /// Whether Finder shows this folder as a single item: an app, a `.pages`
@@ -260,7 +283,11 @@ mod tests {
             .iter()
             .map(|entry| {
                 let relative = entry.path.strip_prefix(root).unwrap().to_string_lossy();
-                if entry.is_folder { format!("{relative}/") } else { relative.into_owned() }
+                if entry.is_folder {
+                    format!("{relative}/")
+                } else {
+                    relative.into_owned()
+                }
             })
             .collect();
         names.sort();
@@ -274,7 +301,12 @@ mod tests {
         touch(&root.join("school/cse332/ex01.pdf"));
         assert_eq!(
             listed(&walked(&root), &root),
-            vec!["notes.txt", "school/", "school/cse332/", "school/cse332/ex01.pdf"]
+            vec![
+                "notes.txt",
+                "school/",
+                "school/cse332/",
+                "school/cse332/ex01.pdf"
+            ]
         );
     }
 
@@ -318,7 +350,10 @@ mod tests {
         touch(&root.join("real/file.txt"));
         std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
         std::os::unix::fs::symlink(&root, root.join("real/loop")).unwrap();
-        assert_eq!(listed(&walked(&root), &root), vec!["real/", "real/file.txt"]);
+        assert_eq!(
+            listed(&walked(&root), &root),
+            vec!["real/", "real/file.txt"]
+        );
     }
 
     #[test]
@@ -344,7 +379,14 @@ mod tests {
         touch(&root.join("keep.txt"));
         assert_eq!(
             listed(&walked(&root), &root),
-            vec!["a/", "b/", "go/", "go/pkg/", "go/pkg/modules.txt", "keep.txt"]
+            vec![
+                "a/",
+                "b/",
+                "go/",
+                "go/pkg/",
+                "go/pkg/modules.txt",
+                "keep.txt"
+            ]
         );
     }
 
@@ -366,17 +408,24 @@ mod tests {
         assert!(ignored.is_empty(), "{ignored:?}");
         assert_eq!(rules.len(), 5);
         assert!(rules.excludes(Path::new("/x/node_modules"), OsStr::new("node_modules")));
-        assert!(rules.excludes(Path::new("/x/build"), OsStr::new("build")), "a trailing slash is allowed");
+        assert!(
+            rules.excludes(Path::new("/x/build"), OsStr::new("build")),
+            "a trailing slash is allowed"
+        );
         assert!(rules.excludes(&home.join("go/pkg/mod"), OsStr::new("mod")));
         assert!(!rules.excludes(&home.join("go/pkg/modx"), OsStr::new("modx")));
-        assert!(!rules.excludes(Path::new("/elsewhere/go/pkg/mod"), OsStr::new("mod")), "paths are exact");
+        assert!(
+            !rules.excludes(Path::new("/elsewhere/go/pkg/mod"), OsStr::new("mod")),
+            "paths are exact"
+        );
         assert!(rules.excludes(Path::new("/Volumes/Backup"), OsStr::new("Backup")));
         assert!(rules.excludes(home, OsStr::new("someone")));
     }
 
     #[test]
     fn lines_that_are_not_rules_are_reported() {
-        let (rules, ignored) = Exclusions::parse("Projects/old\n/\nnode_modules\n", Path::new("/h"));
+        let (rules, ignored) =
+            Exclusions::parse("Projects/old\n/\nnode_modules\n", Path::new("/h"));
         assert_eq!(ignored, vec!["Projects/old", "/"]);
         assert_eq!(rules.len(), 1);
     }
@@ -388,11 +437,17 @@ mod tests {
         assert!(ignored.is_empty(), "{ignored:?}");
         assert_eq!(rules, Exclusions::defaults(home));
         for name in ["node_modules", "bower_components", "Pods", "__pycache__"] {
-            assert!(rules.excludes(&Path::new("/p").join(name), OsStr::new(name)), "{name}");
+            assert!(
+                rules.excludes(&Path::new("/p").join(name), OsStr::new(name)),
+                "{name}"
+            );
         }
         assert!(rules.excludes(&home.join("go/pkg/mod"), OsStr::new("mod")));
         for kept in ["build", "dist", "vendor", "target"] {
-            assert!(!rules.excludes(&Path::new("/p").join(kept), OsStr::new(kept)), "{kept}");
+            assert!(
+                !rules.excludes(&Path::new("/p").join(kept), OsStr::new(kept)),
+                "{kept}"
+            );
         }
     }
 
@@ -413,7 +468,34 @@ mod tests {
         fs::write(&path, "node_modules\n").unwrap();
         let (rules, _) = load_exclusions(&path, &dir).unwrap();
         assert_eq!(rules.len(), 1, "deleted defaults stay deleted");
-        assert_eq!(fs::read_to_string(&path).unwrap(), "node_modules\n", "the file is not rewritten");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "node_modules\n",
+            "the file is not rewritten"
+        );
+    }
+
+    #[test]
+    fn entries_carry_their_modification_time() {
+        let root = scratch("modified");
+        touch(&root.join("a/b.txt"));
+        let found = walked(&root);
+        assert_eq!(found.entries.len(), 2);
+        assert!(found.entries.iter().all(|entry| entry.modified.is_some()));
+    }
+
+    #[test]
+    fn files_with_the_hidden_flag_are_skipped() {
+        let root = scratch("hidden-file");
+        touch(&root.join("shown.txt"));
+        touch(&root.join("hidden.txt"));
+        let status = std::process::Command::new("chflags")
+            .arg("hidden")
+            .arg(root.join("hidden.txt"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(listed(&walked(&root), &root), vec!["shown.txt"]);
     }
 
     #[test]

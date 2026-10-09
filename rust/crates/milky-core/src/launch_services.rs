@@ -103,9 +103,15 @@ mod tests {
 
     #[test]
     fn names_come_from_finder() {
-        assert_eq!(localized_name(Path::new("/Applications")).as_deref(), Some("Applications"));
+        assert_eq!(
+            localized_name(Path::new("/Applications")).as_deref(),
+            Some("Applications")
+        );
         let home = std::env::home_dir().unwrap();
-        assert_eq!(localized_name(&home.join(".Trash")).as_deref(), Some("Trash"));
+        assert_eq!(
+            localized_name(&home.join(".Trash")).as_deref(),
+            Some("Trash")
+        );
     }
 
     #[test]

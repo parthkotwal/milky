@@ -81,7 +81,9 @@ pub fn discover_settings_in(dirs: &[PathBuf], battery: bool) -> Vec<SettingsPane
     let mut seen = HashSet::new();
     let mut panes = Vec::new();
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(dir) else { continue };
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
         let mut bundles: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())
@@ -109,7 +111,11 @@ fn read_pane(bundle: &Path, battery: bool) -> Option<SettingsPane> {
     let attributes = extension
         .get("SettingsExtensionAttributes")
         .and_then(Value::as_dictionary);
-    let flag = |key: &str| attributes.and_then(|a| a.get(key)).and_then(Value::as_boolean);
+    let flag = |key: &str| {
+        attributes
+            .and_then(|a| a.get(key))
+            .and_then(Value::as_boolean)
+    };
     // A pane that refuses links cannot be opened from a search result.
     if flag("allowsXAppleSystemPreferencesURLScheme") != Some(true) {
         return None;
@@ -143,8 +149,15 @@ fn pane_name(
     let representations = attributes
         .and_then(|a| a.get("representations"))
         .and_then(Value::as_array);
-    for representation in representations.into_iter().flatten().filter_map(Value::as_dictionary) {
-        let Some(key) = representation.get("sidebar-name").and_then(Value::as_string) else {
+    for representation in representations
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_dictionary)
+    {
+        let Some(key) = representation
+            .get("sidebar-name")
+            .and_then(Value::as_string)
+        else {
             continue; // representations without a name only control visibility
         };
         let predicate = representation
@@ -156,8 +169,9 @@ fn pane_name(
             return localized(resources, key).unwrap_or_else(|| key.to_string());
         }
     }
-    if let Some(name) = loctable_string(&resources.join("InfoPlist.loctable"), "CFBundleDisplayName")
-        .filter(|name| !name.trim().is_empty())
+    if let Some(name) =
+        loctable_string(&resources.join("InfoPlist.loctable"), "CFBundleDisplayName")
+            .filter(|name| !name.trim().is_empty())
     {
         return name;
     }
@@ -222,7 +236,13 @@ fn clean_identifier_name(raw: &str) -> String {
         return raw.to_string();
     }
     let mut name = raw;
-    for suffix in ["SettingsExtension", "PreferenceExtension", "Extension", "Settings", "Ext"] {
+    for suffix in [
+        "SettingsExtension",
+        "PreferenceExtension",
+        "Extension",
+        "Settings",
+        "Ext",
+    ] {
         if let Some(stripped) = name.strip_suffix(suffix).filter(|s| !s.is_empty()) {
             name = stripped;
             break;
@@ -271,7 +291,11 @@ pub fn parse_search_terms(bytes: &[u8]) -> Vec<SettingsItem> {
             .as_dictionary()
             .and_then(|b| b.get("localizableStrings"))
             .and_then(Value::as_array);
-        for entry in entries.into_iter().flatten().filter_map(Value::as_dictionary) {
+        for entry in entries
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_dictionary)
+        {
             let Some(title) = entry
                 .get("title")
                 .and_then(Value::as_string)
@@ -334,7 +358,8 @@ fn has_internal_battery() -> bool {
         let list: CFArray<CFType> = CFArray::wrap_under_create_rule(list);
         let type_key = CFString::from_static_string("Type");
         list.iter().any(|source| {
-            let description = IOPSGetPowerSourceDescription(blob.as_CFTypeRef(), source.as_CFTypeRef());
+            let description =
+                IOPSGetPowerSourceDescription(blob.as_CFTypeRef(), source.as_CFTypeRef());
             if description.is_null() {
                 return false;
             }
@@ -390,7 +415,10 @@ mod tests {
         assert_eq!(items.len(), 2, "the untitled entry is skipped: {items:?}");
         assert_eq!(items[0].anchor, "Advanced");
         assert_eq!(items[0].title, "Wi-Fi MAC Address");
-        assert_eq!(items[0].keywords, vec!["MAC", "address", "mac address", "advanced"]);
+        assert_eq!(
+            items[0].keywords,
+            vec!["MAC", "address", "mac address", "advanced"]
+        );
         assert_eq!(items[1].anchor, "General_Join");
         assert!(items[1].keywords.is_empty());
     }
@@ -402,7 +430,10 @@ mod tests {
 
     #[test]
     fn identifier_names_are_cleaned_up() {
-        assert_eq!(clean_identifier_name("HeadphoneSettingsExtension"), "Headphone");
+        assert_eq!(
+            clean_identifier_name("HeadphoneSettingsExtension"),
+            "Headphone"
+        );
         assert_eq!(clean_identifier_name("LoginItems"), "Login Items");
         assert_eq!(clean_identifier_name("VPN"), "VPN");
         assert_eq!(clean_identifier_name("Apple Account"), "Apple Account");
@@ -413,7 +444,10 @@ mod tests {
         assert!(predicate_holds("powersource.battery == YES", true));
         assert!(!predicate_holds("powersource.battery == YES", false));
         assert!(predicate_holds("powersource.battery != YES", false));
-        assert!(predicate_holds("device.touchID == YES", false), "assumed present");
+        assert!(
+            predicate_holds("device.touchID == YES", false),
+            "assumed present"
+        );
         assert!(!predicate_holds("device.touchID != YES", false));
         assert!(predicate_holds("", false));
     }
@@ -431,7 +465,10 @@ mod tests {
             title: "Night Shift options".into(),
             keywords: vec![],
         };
-        assert_eq!(pane.url(), "x-apple.systempreferences:com.apple.Displays-Settings.extension");
+        assert_eq!(
+            pane.url(),
+            "x-apple.systempreferences:com.apple.Displays-Settings.extension"
+        );
         assert_eq!(
             pane.item_url(&item),
             "x-apple.systempreferences:com.apple.Displays-Settings.extension?nightShiftSection"
@@ -450,11 +487,19 @@ mod tests {
         let panes = discover_settings();
         assert!(panes.len() >= 45, "only {} panes", panes.len());
         let names: Vec<&str> = panes.iter().map(|p| p.name.as_str()).collect();
-        for expected in ["Displays", "Privacy & Security", "Bluetooth", "Date & Time", "Menu Bar"] {
+        for expected in [
+            "Displays",
+            "Privacy & Security",
+            "Bluetooth",
+            "Date & Time",
+            "Menu Bar",
+        ] {
             assert!(names.contains(&expected), "missing {expected}: {names:?}");
         }
         assert!(
-            !names.iter().any(|n| n.ends_with("Extension") || n.ends_with(".appex")),
+            !names
+                .iter()
+                .any(|n| n.ends_with("Extension") || n.ends_with(".appex")),
             "an identifier leaked into a name: {names:?}"
         );
     }
@@ -471,13 +516,21 @@ mod tests {
         let panes = discover_settings();
         let find = |anchor: &str| {
             panes.iter().find_map(|pane| {
-                pane.items.iter().find(|item| item.anchor == anchor).map(|item| pane.item_url(item))
+                pane.items
+                    .iter()
+                    .find(|item| item.anchor == anchor)
+                    .map(|item| pane.item_url(item))
             })
         };
         assert_eq!(
             find("nightShiftSection").as_deref(),
-            Some("x-apple.systempreferences:com.apple.Displays-Settings.extension?nightShiftSection")
+            Some(
+                "x-apple.systempreferences:com.apple.Displays-Settings.extension?nightShiftSection"
+            )
         );
-        assert!(find("Privacy_Camera").is_some(), "camera privacy section missing");
+        assert!(
+            find("Privacy_Camera").is_some(),
+            "camera privacy section missing"
+        );
     }
 }

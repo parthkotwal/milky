@@ -13,10 +13,10 @@ use crate::api::{
     ENCODE_FAILURE, ErrorReason, ErrorResponse, Request, Response, SearchResponse, result_item,
 };
 use crate::apps;
-use crate::normalize_query;
 use crate::candidate::{self, Candidate, Kind};
-use crate::search::{self, Hit};
+use crate::normalize_query;
 use crate::places;
+use crate::search::{self, Hit};
 use crate::settings;
 
 /// A warm search engine.
@@ -71,7 +71,10 @@ impl Engine {
     }
 
     fn count(&self, kind: Kind) -> usize {
-        self.candidates.iter().filter(|candidate| candidate.kind == kind).count()
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.kind == kind)
+            .count()
     }
 
     /// Search the index, best results first.
@@ -82,7 +85,9 @@ impl Engine {
         let normalized = normalize_query(query);
         let now = SystemTime::now();
         let store = self.lock_usage();
-        search::search(&self.candidates, &normalized, limit, |id| store.score(id, now))
+        search::search(&self.candidates, &normalized, limit, |id| {
+            store.score(id, now)
+        })
     }
 
     /// Re-discover apps and System Settings, replacing the index.
@@ -162,11 +167,17 @@ impl Engine {
 /// places.
 fn discover_candidates() -> Vec<Candidate> {
     let home = std::env::home_dir();
-    let places = home.as_deref().map(places::discover_places).unwrap_or_default();
+    let places = home
+        .as_deref()
+        .map(places::discover_places)
+        .unwrap_or_default();
     candidate::build(
         &apps::discover_apps(),
         &places,
         &settings::discover_settings(),
+        // Files join once file matching is gated, so results never fill with
+        // loose file matches (TASKS, file search step 3).
+        &[],
         home.as_deref().unwrap_or(Path::new("/")),
     )
 }
@@ -240,11 +251,17 @@ mod tests {
             .find(|r| r["title"] == "Terminal")
             .expect("Terminal");
         assert_eq!(terminal["match_kind"], "prefix");
-        assert_eq!(terminal["id"], "app:/System/Applications/Utilities/Terminal.app");
+        assert_eq!(
+            terminal["id"],
+            "app:/System/Applications/Utilities/Terminal.app"
+        );
         assert_eq!(terminal["kind"], "app");
         assert_eq!(terminal["subtitle"], "Utilities");
         assert_eq!(terminal["action"]["type"], "launch");
-        assert_eq!(terminal["action"]["path"], "/System/Applications/Utilities/Terminal.app");
+        assert_eq!(
+            terminal["action"]["path"],
+            "/System/Applications/Utilities/Terminal.app"
+        );
     }
 
     #[test]
@@ -325,10 +342,7 @@ mod tests {
         let dir = temp_data_dir("failed");
         let engine = Engine::with_data_dir(&dir);
         assert_eq!(ask(&engine, &selection_json("failed"))["kind"], "recorded");
-        assert_eq!(
-            engine.usage_score(SAFARI, SystemTime::now()),
-            0.0
-        );
+        assert_eq!(engine.usage_score(SAFARI, SystemTime::now()), 0.0);
         let lines = log_lines(&dir);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains(r#""outcome":"failed""#), "{}", lines[0]);
@@ -423,8 +437,15 @@ mod tests {
     #[test]
     fn settings_are_indexed_and_searchable() {
         let engine = Engine::new();
-        assert!(engine.settings_count() > 500, "only {} settings", engine.settings_count());
-        let v = ask(&engine, r#"{"op":"search","query":"night shift","limit":5}"#);
+        assert!(
+            engine.settings_count() > 500,
+            "only {} settings",
+            engine.settings_count()
+        );
+        let v = ask(
+            &engine,
+            r#"{"op":"search","query":"night shift","limit":5}"#,
+        );
         let night_shift = v["results"]
             .as_array()
             .unwrap()
