@@ -602,3 +602,55 @@ Consequences:
   searching (ABI mismatch). Do not rebuild the daily launcher until then.
 - Pinned by real-query tests: `downloads`, `down`, `documents`, `trash`,
   `recycle bin`, `icloud`, `applications`, `utilities`, `music`.
+
+---
+
+## 2026-10-09 — File matching and ranking: strong name matches, path support, a file cap
+
+Status: implemented.
+
+Decision:
+
+- Names split into words at punctuation and between letters and digits, with
+  each piece and the whole token also kept joined: `final-report_v2.pdf` ->
+  `final`, `report`, `v`, `2`, `pdf`, `v2`, `finalreportv2pdf`.
+- A file's name is matched without its extension (`resume` is exact for
+  `resume.pdf`); folders keep their whole name.
+- A file or folder matches only if every query word starts a word of its
+  name, a folder above it (counted from iCloud Drive or the home folder), or
+  its extension, and at least one word is in the name. The name's own words
+  are scored with the usual ladder; anything below `WordPrefix` is no match
+  (no substrings, initials, or scattered letters for files). If a folder or
+  the extension was needed, the tier drops one step (`Exact` -> `Prefix` ->
+  `WordPrefix` -> `PathSupported`, a new tier just below `WordPrefix`).
+- Order: tier, usage, prior (apps > places > panes > sections > folders >
+  files), keyword match, newest modification date, shorter title, title, ID
+  (`search::rank`, total).
+- Results: the best `limit` hits chosen with `select_nth_unstable_by` and a
+  sort of just those, never a full sort. At most 40% of the list (at least
+  1) are files or folders, the best ones; more only when nothing else fills
+  the list.
+
+Why:
+
+Measured on this Mac. Loose matching on files is mostly noise: `notes`
+matched 1,435 names loosely and 2 strongly. Of option D (path support counts
+fully), B (always below name-only matches), and C (one step down), C was best
+or tied in a known-file simulation (about 1,700 queries built from 500 real
+files): folder+name queries found the file first 38% of the time vs 36%,
+name+extension 37% vs 33-34%. Path support narrows the typical query from 21
+matches to 5; without it those queries find nothing. Only 2% of files changed
+in the last 30 days, so recency separates equally named files. The user asked
+that results never fill with files, as Spotlight avoids; the cap enforces that
+directly. The cap is a candidate for a user setting (TASKS, Later).
+
+Consequences:
+
+- `final report` is a `WordPrefix` (not `Prefix`) match for `final-report`,
+  because folding drops the dash; `Final Report` is exact.
+- Files and folders join only once the query has 3 characters (spaces
+  aside; `search::MIN_FILE_QUERY_CHARS`). At 1-2 characters a file named
+  exactly the query outranked every app (`a` -> a file "A"; `go` -> `~/go`
+  above Google Chrome); in a sample of 3-character queries the app always
+  came first. Places still match from the first character. Cost: a folder
+  named exactly `ui` needs a third character to appear.

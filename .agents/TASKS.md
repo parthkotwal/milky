@@ -104,7 +104,7 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          shown. Verified on screen: opening `~/.Trash` by path shows Finder's
          Trash (with Empty); `/Applications/Utilities` shows the merged system
          utilities. Swift adapter v4 is wired (see `swift/INTEGRATION.md`).
-      3. [ ] Files in search. Agreed 2026-10-08: a file or folder needs a
+      3. [x] Files in search (done 2026-10-09). Agreed 2026-10-08: a file or folder needs a
          strong (word-level) match on its own name; parent-folder words and
          the extension only support it; equal strength ranks apps > places >
          settings > folders > files; recency (modified date) among files;
@@ -115,8 +115,18 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          Drive or home, extension, modified; walked places and apps not
          repeated; not in the engine yet; build of ~23k takes ~140 ms,
          folder words recomputed per file, cacheable per folder); 3b match
-         rule [ ] (user); 3d top-k + cap + order [ ] (user); 3e engine
-         wiring, tests, docs [ ].
+         rule [x] (user, option C: one step down when folders or the
+         extension were needed; `Tier::PathSupported`); 3d top-k + cap + order
+         [x] (user; `top` via `select_nth_unstable_by`, `select_best` merge;
+         cap 40% of the list, at least 1; newest first among equal files);
+         3e engine wiring, tests, docs [x]. Measured here (4,948 files and
+         folders after the user's exclusions): engine start 0.11-0.15 s,
+         queries 0.25-0.33 ms. Swift already on v4: 27 tests pass, so a
+         rebuilt launcher shows files.
+         Files and folders join from 3 query characters (spaces aside):
+         at 2, short folders (`go`, `ui`, `db`) matched exactly and outranked
+         apps (`go` above Google Chrome); at 3 the app led in every sample.
+         Folder words are recomputed per file at build (cacheable per folder).
          Original sketch: path-aware matching (`332 ex01` ->
          `school/cse332/ex01.pdf`), file ranking (match, usage, recency,
          location, folder vs file) tuned on a query set; top-k selection.
@@ -186,6 +196,10 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 - [ ] Result previews and secondary actions.
 
 ## Later
+
+- [ ] User settings for result mix: the file cap (now 40% of the list) and
+      possibly the kind order (apps > places > settings > folders > files).
+      Requested 2026-10-08; `search::file_cap` is the single place to change.
 
 - [ ] Learned ranking.
 - [ ] Contextual personalization.

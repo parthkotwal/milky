@@ -85,10 +85,11 @@ fn main() -> ExitCode {
     let engine = Engine::new();
     let scan = started.elapsed();
     eprintln!(
-        "indexed {} apps, {} places, and {} settings in {:.1?}",
+        "indexed {} apps, {} places, {} settings, and {} files and folders in {:.1?}",
         engine.app_count(),
         engine.place_count(),
         engine.settings_count(),
+        engine.file_count(),
         scan
     );
 

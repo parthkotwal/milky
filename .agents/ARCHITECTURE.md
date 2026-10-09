@@ -59,8 +59,11 @@ folders such as Downloads, Trash, Applications, and Utilities. `candidate.rs`
 turns 127 apps, 13 places, and 606 settings into one list of destinations with
 IDs, subtitles, and actions;
 `files.rs` walks the home folder and iCloud Drive with Finder's visibility
-rules and a user-editable exclusion list (~23k entries here, 0.05-0.3 s); file
-results are not wired into search yet. Search ranks apps, places, and settings
+rules and a user-editable exclusion list (~5-23k entries here, 0.05-0.3 s).
+Files and folders need a strong match on their own name, with folder words and
+the extension as support (`search::file_tier`). Results are the top `limit` by
+`search::rank`, chosen without a full sort, with files capped at 40% of the list
+unless nothing else fills it. Search ranks apps, places, settings, and files
 together by tier (title match kind interleaved with Apple's keyword matches),
 then usage, then destination prior (app > place > pane > section). Apps carry
 Finder's display names and a precomputed matching key (folded,

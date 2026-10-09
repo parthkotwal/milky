@@ -1,6 +1,8 @@
 //! Turning a query and a set of candidates into an ordered list of results.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
+
+use std::time::SystemTime;
 
 use crate::candidate::{Candidate, FileFacts, Kind};
 use crate::matching::{KeywordMatch, MatchKind, NameKey, keyword_match, match_key};
@@ -55,20 +57,6 @@ pub fn tier(kind: Option<MatchKind>, keyword: Option<KeywordMatch>) -> Option<Ti
 
 /// How strongly a file or folder matches `query`, or `None` (DECISIONS
 /// 2026-10-08, file matching option C).
-///
-/// - Every query word must start a word of the name (`name.words()`), of a
-///   folder above it (`facts.folder_words`), or its extension
-///   (`facts.extension`). Check the name first: a word found there counts as
-///   a name word even if a folder has it too.
-/// - At least one query word must come from the name. Folders and the
-///   extension only support a match; they never make one alone.
-/// - Score the name against just its own words, in query order, with
-///   [`match_key`] and [`Tier::from`]. Only strong matches count: anything
-///   below `WordPrefix` is no match (no substrings or scattered letters for
-///   files).
-/// - If any word needed a folder or the extension, drop one step: `Exact` ->
-///   `Prefix` -> `WordPrefix` -> `PathSupported`.
-///
 /// `query` is normalized ([`crate::normalize_query`]): lowercase, single
 /// spaces. An empty query matches nothing.
 pub fn file_tier(name: &NameKey, facts: &FileFacts, query: &str) -> Option<Tier> {
@@ -112,6 +100,13 @@ pub fn file_tier(name: &NameKey, facts: &FileFacts, query: &str) -> Option<Tier>
     })
 }
 
+/// How many characters (spaces aside) a query needs before files and folders
+/// join the results. Shorter queries are almost always the start of an app
+/// name, and short folder names (`go`, `ui`, `db`) would otherwise match
+/// exactly and outrank the app (`go` above Google Chrome). Measured
+/// 2026-10-09: at 3 characters the app came first in every sample query.
+pub const MIN_FILE_QUERY_CHARS: usize = 3;
+
 /// One candidate that matched a query. Borrows from the candidate list
 /// instead of copying it, so a search allocates nothing per candidate.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,12 +137,17 @@ pub fn search<'a>(
     limit: usize,
     usage_of: impl Fn(&str) -> f64,
 ) -> Vec<Hit<'a>> {
-    let mut hits: Vec<Hit<'a>> = candidates
+    let files_allowed = query.chars().filter(|c| *c != ' ').count() >= MIN_FILE_QUERY_CHARS;
+    let hits: Vec<Hit<'a>> = candidates
         .iter()
         .filter_map(|candidate| {
             // Files and folders match by their own rule: strong name matches
-            // only, with folders and the extension as support.
+            // only, with folders and the extension as support, and only once
+            // the query is long enough.
             if let Some(facts) = &candidate.file {
+                if !files_allowed {
+                    return None;
+                }
                 let name = candidate.names.first()?;
                 let tier = file_tier(&name.key, facts, query)?;
                 return Some(Hit {
@@ -184,18 +184,104 @@ pub fn search<'a>(
         })
         .collect();
 
-    hits.sort_by(|a, b| {
-        b.tier
-            .cmp(&a.tier)
-            .then_with(|| b.usage.total_cmp(&a.usage))
-            .then_with(|| b.candidate.prior().cmp(&a.candidate.prior()))
-            .then_with(|| b.keyword.cmp(&a.keyword))
-            .then_with(|| a.title.len().cmp(&b.title.len()))
-            .then_with(|| a.title.cmp(b.title))
-            .then_with(|| a.candidate.id.cmp(&b.candidate.id))
-    });
-    hits.truncate(limit);
+    select_best(hits, limit, file_cap(limit))
+}
+
+/// How two hits compare: `Less` means `a` ranks first. Tier, then usage, then
+/// prior (apps, places, settings, folders, files), then keyword match, then
+/// the more recently modified file or folder, then the shorter title, then
+/// title, then ID. Total: no two distinct hits compare `Equal` (IDs differ),
+/// so any correct selection or sort gives the same order.
+pub fn rank(a: &Hit, b: &Hit) -> Ordering {
+    b.tier
+        .cmp(&a.tier)
+        .then_with(|| b.usage.total_cmp(&a.usage))
+        .then_with(|| b.candidate.prior().cmp(&a.candidate.prior()))
+        .then_with(|| b.keyword.cmp(&a.keyword))
+        .then_with(|| modified(b).cmp(&modified(a)))
+        .then_with(|| a.title.len().cmp(&b.title.len()))
+        .then_with(|| a.title.cmp(b.title))
+        .then_with(|| a.candidate.id.cmp(&b.candidate.id))
+}
+
+/// When a file or folder last changed; `None` for everything else, and for
+/// files whose date is unknown, which then rank after dated ones.
+fn modified(hit: &Hit) -> Option<SystemTime> {
+    hit.candidate.file.as_ref()?.modified
+}
+
+/// How many of `limit` results may be files or folders: 40%, at least one.
+/// The rest is kept for apps, places, and settings, which are fewer and more
+/// often what a launcher query wants. A candidate for a user setting later.
+pub fn file_cap(limit: usize) -> usize {
+    (limit * 2 / 5).max(1)
+}
+
+/// Whether a hit is a walked file or folder, which the file cap limits.
+fn is_file(hit: &Hit) -> bool {
+    hit.candidate.file.is_some()
+}
+
+/// The best `n` hits in [`rank`] order, without sorting all of them.
+///
+/// `select_nth_unstable_by(n - 1, rank)` moves the `n` best hits to the front
+/// (in no particular order) in one pass. Then sort just that front part and
+/// drop the rest. Fewer than `n` hits: sort them all. `n == 0`: nothing.
+pub fn top<'a>(mut hits: Vec<Hit<'a>>, n: usize) -> Vec<Hit<'a>> {
+    if n == 0 {
+        return Vec::new();
+    }
+    if hits.len() > n {
+        hits.select_nth_unstable_by(n - 1, rank);
+        hits.truncate(n);
+    }
+    hits.sort_by(rank);
     hits
+}
+
+/// At most `limit` hits in [`rank`] order, with at most `file_cap` files or
+/// folders among them, unless there are not enough other hits to fill
+/// `limit`, in which case more files fill the rest, still best first.
+///
+/// Split the hits into files and everything else; take the [`top`] `limit`
+/// of each; then merge the two ranked lists, always taking whichever head
+/// ranks first, but skipping files once `file_cap` are taken. If the merged
+/// list is short of `limit`, add the skipped files, best first, and keep the
+/// result in rank order.
+pub fn select_best<'a>(hits: Vec<Hit<'a>>, limit: usize, file_cap: usize) -> Vec<Hit<'a>> {
+    let (files, others): (Vec<_>, Vec<_>) = hits.into_iter().partition(is_file);
+    let mut files = top(files, limit).into_iter().peekable();
+    let mut others = top(others, limit).into_iter().peekable();
+
+    let mut chosen: Vec<Hit<'a>> = Vec::with_capacity(limit);
+    let mut skipped: Vec<Hit<'a>> = Vec::new();
+    let mut files_taken = 0;
+
+    while chosen.len() < limit {
+        let take_file = match (files.peek(), others.peek()) {
+            (None, None) => break,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some(f), Some(o)) => rank(f, o) == Ordering::Less,
+        };
+        if take_file {
+            if let Some(hit) = files.next() {
+                if files_taken < file_cap {
+                    files_taken += 1;
+                    chosen.push(hit);
+                } else {
+                    skipped.push(hit);
+                }
+            }
+        } else if let Some(hit) = others.next() {
+            chosen.push(hit);
+        }
+    }
+
+    let room = limit - chosen.len();
+    chosen.extend(skipped.into_iter().take(room));
+    chosen.sort_by(rank);
+    chosen
 }
 
 #[cfg(test)]
@@ -610,6 +696,147 @@ mod tests {
             ids(&search(&candidates, "resume pdf", 10, |_| 0.0)),
             vec!["file:/Users/someone/resume.pdf"]
         );
+    }
+
+    fn dated_file(path: &str, seconds: u64) -> Candidate {
+        let entry = crate::files::FileEntry {
+            path: std::path::PathBuf::from(path),
+            is_folder: false,
+            modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+        };
+        crate::candidate::from_file(&entry, std::path::Path::new("/Users/someone")).unwrap()
+    }
+
+    /// Hits for every candidate, as if all matched equally, in a scrambled order.
+    fn scrambled_hits(candidates: &[Candidate]) -> Vec<Hit<'_>> {
+        let mut hits: Vec<Hit> = candidates
+            .iter()
+            .map(|candidate| Hit {
+                candidate,
+                title: candidate.title(),
+                kind: Some(MatchKind::Prefix),
+                keyword: None,
+                tier: Tier::Prefix,
+                usage: 0.0,
+            })
+            .collect();
+        // A fixed shuffle: reverse, then swap pairs.
+        hits.reverse();
+        for pair in hits.chunks_mut(2) {
+            pair.reverse();
+        }
+        hits
+    }
+
+    fn sorted<'a>(mut hits: Vec<Hit<'a>>) -> Vec<Hit<'a>> {
+        hits.sort_by(rank);
+        hits
+    }
+
+    #[test]
+    fn files_join_from_the_third_character() {
+        let candidates = [
+            file("/Users/someone/go"),
+            candidate("app:/Applications/Google Chrome.app", Kind::App, &["Google Chrome"]),
+        ];
+        assert_eq!(ids(&search(&candidates, "g", 10, |_| 0.0)), vec!["app:/Applications/Google Chrome.app"]);
+        assert_eq!(
+            ids(&search(&candidates, "go", 10, |_| 0.0)),
+            vec!["app:/Applications/Google Chrome.app"],
+            "an exact two-letter folder no longer outranks the app"
+        );
+        let files = [file("/Users/someone/goal.txt")];
+        assert_eq!(search(&files, "goa", 10, |_| 0.0).len(), 1);
+        assert_eq!(search(&files, "g o", 10, |_| 0.0).len(), 0, "spaces do not count");
+    }
+
+    #[test]
+    fn places_still_match_from_the_first_character() {
+        let candidates = [candidate("folder:/Users/someone/Downloads", Kind::Place, &["Downloads"])];
+        assert_eq!(search(&candidates, "d", 10, |_| 0.0).len(), 1);
+    }
+
+    #[test]
+    fn the_newest_of_equally_good_files_comes_first() {
+        let candidates = [
+            dated_file("/Users/someone/a/index.ts", 100),
+            dated_file("/Users/someone/b/index.ts", 300),
+            dated_file("/Users/someone/c/index.ts", 200),
+        ];
+        assert_eq!(
+            ids(&search(&candidates, "index", 10, |_| 0.0)),
+            vec!["file:/Users/someone/b/index.ts", "file:/Users/someone/c/index.ts", "file:/Users/someone/a/index.ts"]
+        );
+    }
+
+    #[test]
+    fn the_cap_is_forty_percent_and_at_least_one() {
+        assert_eq!(file_cap(10), 4);
+        assert_eq!(file_cap(20), 8);
+        assert_eq!(file_cap(1), 1);
+        assert_eq!(file_cap(2), 1);
+    }
+
+    #[test]
+    fn top_returns_the_best_n_in_rank_order() {
+        let candidates: Vec<Candidate> = (0..40).map(|i| dated_file(&format!("/Users/someone/f{i}.txt"), i)).collect();
+        let hits = scrambled_hits(&candidates);
+        let expected: Vec<&str> = ids(&sorted(hits.clone())[..5]);
+        assert_eq!(ids(&top(hits.clone(), 5)), expected);
+        assert_eq!(ids(&top(hits.clone(), 100)), ids(&sorted(hits.clone())), "fewer than n: all, sorted");
+        assert!(top(hits, 0).is_empty());
+    }
+
+    #[test]
+    fn files_are_capped_when_other_results_can_fill_the_list() {
+        // Every file outranks every app (Exact vs Prefix), yet only 4 files
+        // make the list: the best 4, still ranked above the apps.
+        let mut candidates: Vec<Candidate> = (0..3000)
+            .map(|i| dated_file(&format!("/Users/someone/p{i}/report.txt"), i))
+            .collect();
+        candidates.extend((0..20).map(|i| {
+            candidate(&format!("app:/Applications/Report Viewer {i}.app"), Kind::App, &[&format!("Report Viewer {i}")])
+        }));
+        let hits = search(&candidates, "report", 10, |_| 0.0);
+        assert_eq!(hits.len(), 10);
+        let files: Vec<&str> = ids(&hits).into_iter().filter(|id| id.starts_with("file:")).collect();
+        assert_eq!(
+            files,
+            vec![
+                "file:/Users/someone/p2999/report.txt",
+                "file:/Users/someone/p2998/report.txt",
+                "file:/Users/someone/p2997/report.txt",
+                "file:/Users/someone/p2996/report.txt",
+            ],
+            "the four newest"
+        );
+        assert!(ids(&hits)[..4].iter().all(|id| id.starts_with("file:")), "kept in rank order");
+    }
+
+    #[test]
+    fn files_fill_the_list_when_little_else_matches() {
+        let mut candidates: Vec<Candidate> = (0..30)
+            .map(|i| dated_file(&format!("/Users/someone/p{i}/report.txt"), i))
+            .collect();
+        candidates.push(candidate("app:/Applications/Report Viewer.app", Kind::App, &["Report Viewer"]));
+        let hits = search(&candidates, "report", 10, |_| 0.0);
+        assert_eq!(hits.len(), 10);
+        assert_eq!(ids(&hits).iter().filter(|id| id.starts_with("file:")).count(), 9);
+        assert_eq!(ids(&hits), ids(&sorted(hits.clone())), "still in rank order");
+    }
+
+    #[test]
+    fn select_best_keeps_rank_order_across_both_lists() {
+        // Mixed hits in one tier: apps outrank files by prior, so the list is
+        // apps first, then up to the cap of files.
+        let mut candidates: Vec<Candidate> = (0..6).map(|i| dated_file(&format!("/Users/someone/n{i}.txt"), i)).collect();
+        candidates.extend((0..6).map(|i| candidate(&format!("app:/A{i}.app"), Kind::App, &[&format!("N{i}")])));
+        let hits = scrambled_hits(&candidates);
+        let best = select_best(hits.clone(), 5, 2);
+        let expected: Vec<&str> = ids(&sorted(hits)).into_iter().filter(|id| id.starts_with("app:")).take(5).collect();
+        assert_eq!(ids(&best), expected, "five apps outrank every file, so no file is needed");
+        let best = select_best(scrambled_hits(&candidates[..6]), 5, 2);
+        assert_eq!(best.len(), 5, "only files: they fill the list past the cap");
     }
 
     #[test]

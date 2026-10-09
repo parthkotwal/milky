@@ -15,6 +15,7 @@ use crate::api::{
 use crate::apps;
 use crate::candidate::{self, Candidate, Kind};
 use crate::normalize_query;
+use crate::files;
 use crate::places;
 use crate::search::{self, Hit};
 use crate::settings;
@@ -63,6 +64,11 @@ impl Engine {
     /// How many well-known places are currently indexed.
     pub fn place_count(&self) -> usize {
         self.count(Kind::Place)
+    }
+
+    /// How many files and folders from the file walk are currently indexed.
+    pub fn file_count(&self) -> usize {
+        self.count(Kind::File) + self.count(Kind::Folder)
     }
 
     /// How many System Settings panes and sections are currently indexed.
@@ -163,23 +169,30 @@ impl Engine {
 }
 
 /// Every destination search can return: installed apps, well-known places,
-/// then System Settings panes and sections. Without a home folder there are no
-/// places.
+/// System Settings panes and sections, then files and folders. Without a home
+/// folder there are no places and no files.
 fn discover_candidates() -> Vec<Candidate> {
     let home = std::env::home_dir();
-    let places = home
-        .as_deref()
-        .map(places::discover_places)
-        .unwrap_or_default();
+    let places = home.as_deref().map(places::discover_places).unwrap_or_default();
+    let walk = home.as_deref().map(discover_files).unwrap_or_default();
     candidate::build(
         &apps::discover_apps(),
         &places,
         &settings::discover_settings(),
-        // Files join once file matching is gated, so results never fill with
-        // loose file matches (TASKS, file search step 3).
-        &[],
+        &walk.entries,
         home.as_deref().unwrap_or(Path::new("/")),
     )
+}
+
+/// The file walk with the user's exclusions, or the defaults if the exclusions
+/// file cannot be read or written: a broken file must not mean indexing
+/// everything.
+fn discover_files(home: &Path) -> files::Walk {
+    let exclusions = files::exclusions_path()
+        .and_then(|path| files::load_exclusions(&path, home))
+        .map(|(rules, _ignored)| rules)
+        .unwrap_or_else(|_| files::Exclusions::defaults(home));
+    files::discover_files(home, &exclusions)
 }
 
 #[cfg(test)]

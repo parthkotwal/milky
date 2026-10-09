@@ -83,6 +83,13 @@ learning-first). Swift adapter and linking — Swift owner.
   `scripts/build.sh test`: 21 Swift tests pass; `milky-probe` reports ABI 2.
 - Matching is now accent-insensitive and camelCase-aware. Result order still
   comes entirely from Rust; no Swift change is required.
+- 2026-10-09: results now include walked files and folders (`kind` `file` /
+  `folder`, `open` action, contract v4 unchanged). At most 40% of a result
+  list is files unless nothing else matches. `match_kind` can be `"path"`
+  (the name matched part of the query, folders or the extension the rest).
+  Engine construction now also walks the home folder: about 0.1-0.4 s total
+  here, so keep creating it off the main thread. Verified with
+  `scripts/build.sh test`: 27 Swift tests pass.
 - 2026-10-08: settings also match Apple's keywords, and `match_kind` can be
   `"keyword"` (only keywords matched; the title is the destination's default
   title). Additive, ABI stays 3; Swift ignores `match_kind`. Verified with
