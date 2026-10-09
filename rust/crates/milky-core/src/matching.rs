@@ -62,6 +62,11 @@ impl NameKey {
         &self.words
     }
 
+    /// The whole name, normalized like a query: `"Café Bar"` -> `"cafe bar"`.
+    pub fn folded(&self) -> &str {
+        &self.folded
+    }
+
     pub fn new(name: &str) -> Self {
         let mut words = Vec::new();
         let mut camel_initials = String::new();
@@ -201,12 +206,19 @@ pub fn word_initials(name: &str) -> String {
         .collect()
 }
 
+/// Whether `c` separates words: punctuation and symbols, but not letters,
+/// digits, or the combining marks that carry accents. Dashes are removed by
+/// [`fold`] before this is asked, so `wi-fi` stays one word, `wifi`.
+pub fn is_separator(c: char) -> bool {
+    !c.is_alphanumeric() && !is_combining_mark(c) && !c.is_whitespace()
+}
+
 /// `token` split at punctuation and symbols, empty pieces dropped:
 /// `final-report_v2.pdf` -> `final`, `report`, `v2`, `pdf`; `(Head` -> `Head`.
 /// Accents written as separate combining marks stay with their letter.
 fn punctuation_pieces(token: &str) -> impl Iterator<Item = &str> {
     token
-        .split(|c: char| !c.is_alphanumeric() && !is_combining_mark(c))
+        .split(is_separator)
         .filter(|piece| !piece.is_empty())
 }
 

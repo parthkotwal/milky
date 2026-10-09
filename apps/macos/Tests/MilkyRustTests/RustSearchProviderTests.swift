@@ -130,6 +130,27 @@ import XCTest
         await provider.shutdown()
     }
 
+    func testRealEngineReturnsProjectSourceFiles() async throws {
+        let packageURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageURL.appendingPathComponent("Tests/MilkyNativeTests/LauncherStateTests.swift")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+
+        let provider = RustSearchProvider(limit: 20)
+        let results = try await provider.search(query: "LauncherStateTests")
+        let source = try XCTUnwrap(results.first { $0.id == "file:\(sourceURL.path)" })
+        XCTAssertEqual(source.kind, .file)
+        XCTAssertEqual(source.title, "LauncherStateTests.swift")
+        guard case .open(let url) = source.action else {
+            await provider.shutdown()
+            return XCTFail("Indexed files must decode as open path actions")
+        }
+        XCTAssertEqual(url.path, sourceURL.path)
+        await provider.shutdown()
+    }
+
     func testSelectionAcknowledgementAndErrorsAreValidated() throws {
         XCTAssertNoThrow(try RustSearchProvider.validateRecorded(Data(#"{"kind":"recorded"}"#.utf8)))
         XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"error","reason":"bad_request","message":"selected must be shown"}"#.utf8))) { error in

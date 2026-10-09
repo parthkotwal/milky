@@ -2,12 +2,12 @@
 
 ## Current milestone
 
-Invoke Milky, type a query, navigate real app and settings results, and execute
-the selected destination's primary action. This is the native foundation for
-the broader product. Real Rust search is connected. Explicit fixtures remain
-available for UI QA. Contract v3 supplies app and System Settings destinations;
-the v4 adapter also executes folder destinations' declared open action and
-accepts future file results. Rust file search is not producing file results yet.
+Invoke Milky, type a query, navigate real app, settings, folder, and file
+results, and execute the selected destination's primary action. This is the
+native foundation for the broader product. Real Rust search is connected.
+Explicit fixtures remain available for UI QA. Contract v4 results render native
+icons and execute their declared launch, URL, or open-path actions. Files can be
+inspected through Quick Look; secondary actions are available from the keyboard.
 
 ## Now
 
@@ -37,18 +37,22 @@ quality follow-ups; they do not block the next product capability.
    deep link opens the intended pane. Keep the initial row/Enter action fast.
 3. Dogfood the Tab suggestion with real Rust results, including an acronym
    query such as `vsc`; verify completion leaves opening to Return.
+4. In the rebuilt launcher, search for a known project file and verify Return
+   opens it in its default app; confirm folder results still open in Finder.
 
 ## Soon
 
 - [x] Integrate `record_selection` through the agreed Rust contract after each
       real open attempt; fixtures remain excluded from persistence.
+- [x] Choose the hybrid mixed-result panel; add Quick Look file inspection and
+      a keyboard-accessible native action menu from existing URLs.
 - [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
       behavior; record only concrete failures in ISSUES.md.
 - [ ] Add previews and secondary actions when a core result type supplies them.
 
 ## Later
 
-- [ ] Present unified file/document/image results as core capabilities arrive.
+- [ ] Present document contents, OCR results, and images as core capabilities arrive.
 - [ ] Extend preferences only when there are real user-facing settings to expose.
 
 Keep this queue short. Put implementation findings in ISSUES.md and durable
@@ -187,6 +191,18 @@ to the implemented invocation behavior.
 - The app and settings paths still pass the same bridge suite. Opening a place
   in Finder through the live launcher remains a focused manual check.
 
+## QA evidence — 2026-10-09 — File results through contract v4
+
+- The rebuilt Rust archive now returns walked file and folder results using the
+  already-agreed ABI 4 variants. `apps/macos/scripts/build.sh test` passes 28
+  tests, including a real query returning this project's
+  `LauncherStateTests.swift` file with its matching `file:` ID and `open` path.
+- Native file and folder icons resolve from their paths, and the existing
+  opener sends the result's declared path to `NSWorkspace.open`. The live
+  launcher was rebuilt and restarted with the user's `--shortcut=command-space`
+  setting preserved; visually checking and opening a file in its panel remains
+  a keyboard QA step.
+
 ## QA evidence — 2026-09-13
 
 - 12 XCTest cases pass through the canonical build script, including five bridge
@@ -231,9 +247,26 @@ to the implemented invocation behavior.
   shortcuts. Do not treat those timeouts as proof of the shortcut acceptance
   criteria; see ISSUES.md.
 
-The native app-search foundation and first real selection-event wiring are
-complete. Next implementation work is focused native dogfooding, then action
-previews when the core supplies supported actions.
+The native search, primary open, and first selection-event wiring are complete.
+Next work is focused dogfooding of file inspection, native secondary actions,
+and launcher behavior across displays and accessibility settings.
+
+## QA evidence — 2026-10-09 — Hybrid panel and file actions
+
+- The chosen hybrid combines 54 pt rows and the inline Tab suggestion with
+  result-type labels. Dark and light snapshots of `mixed` results were inspected.
+  Fixture-only `balanced`, `compact`, and `guided` variants remain runnable.
+- File inspection and the action menu render through the offscreen snapshot
+  tool. In the running fixture panel, typing `mixed`, selecting `Search.swift`
+  with Down, Command-K, Down, Return opened its Quick Look preview. Escape
+  returned to results; Command-P reopened inspection. The preview exposed the
+  file's content to accessibility. The fixture app was quit after QA.
+- `scripts/build.sh test` passes 30 tests, including new menu/inspection state
+  transitions and the real Rust bridge suite. No Rust source or C ABI changed
+  for this native work. In real mode, `Search.swift` came from Rust, Command-P
+  displayed its contents, and Command-K → two Down presses → Return revealed
+  the exact file selected in Finder. The QA Finder window and launcher were
+  closed afterward. Physical clipboard behavior remains focused dogfooding QA.
 
 ## QA evidence — 2026-10-08 — Smoother query updates
 

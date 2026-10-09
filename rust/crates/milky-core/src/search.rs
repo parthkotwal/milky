@@ -1,11 +1,12 @@
 //! Turning a query and a set of candidates into an ordered list of results.
 
 use std::cmp::{Ordering, Reverse};
+use std::path::Path;
 
 use std::time::SystemTime;
 
-use crate::candidate::{Candidate, FileFacts, Kind};
-use crate::matching::{KeywordMatch, MatchKind, NameKey, keyword_match, match_key};
+use crate::candidate::{Action, Candidate, FileFacts, Kind, folder_id};
+use crate::matching::{KeywordMatch, MatchKind, NameKey, keyword_match, match_key, words_of};
 
 /// How strong the evidence for a hit is, weakest to strongest; the first sort
 /// key. Title kinds and keyword matches interleave: a whole keyword is better
@@ -101,11 +102,53 @@ pub fn file_tier(name: &NameKey, facts: &FileFacts, query: &str) -> Option<Tier>
 }
 
 /// How many characters (spaces aside) a query needs before files and folders
-/// join the results. Shorter queries are almost always the start of an app
+/// match normally. Shorter queries are almost always the start of an app
 /// name, and short folder names (`go`, `ui`, `db`) would otherwise match
-/// exactly and outrank the app (`go` above Google Chrome). Measured
-/// 2026-10-09: at 3 characters the app came first in every sample query.
+/// exactly and outrank the app (`go` above Google Chrome). Below this, a file
+/// or folder must match exactly and then ranks as a [`Tier::WordPrefix`]
+/// match: `uw` still finds `~/UW` when no app starts with it, and `go` lists
+/// `~/go` below Google Chrome. Measured 2026-10-09: at 3 characters the app
+/// came first in every sample query.
 pub const MIN_FILE_QUERY_CHARS: usize = 3;
+
+/// Whether `query` ends with this file's whole name, extension included, at a
+/// word boundary: `... parth kotwal google pdf`. Compares strings without
+/// allocating, so it can run on every file before [`names_whole_path`].
+fn ends_with_whole_name(name: &NameKey, facts: &FileFacts, query: &str) -> bool {
+    let rest = match facts.extension.as_deref() {
+        Some(extension) => match query.strip_suffix(extension).and_then(|rest| rest.strip_suffix(' ')) {
+            Some(rest) => rest,
+            None => return false,
+        },
+        None => query,
+    };
+    rest.strip_suffix(name.folded())
+        .is_some_and(|before| before.is_empty() || before.ends_with(' '))
+}
+
+/// Whether `query` names the candidate's file by its path: the whole name,
+/// extension included (`parth kotwal google pdf`), or a path ending in it,
+/// written the way it is shown (`desktop customized parth kotwal google pdf`
+/// from `~/Desktop/Customized/...`; `icloud drive taxes ...`) or in full
+/// (`/Users/...`). Compares whole path components, so `kotwal google pdf`
+/// is not a whole name. Only called for candidates that already matched, so
+/// the allocations here stay off the per-candidate path.
+fn names_whole_path(candidate: &Candidate, query: &str) -> bool {
+    let Action::Open(path) = &candidate.action else {
+        return false;
+    };
+    let shown: Vec<&str> = candidate
+        .subtitle
+        .split('/')
+        .chain(std::iter::once(candidate.title()))
+        .collect();
+    let full: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
+    [shown, full].iter().any(|parts| {
+        (1..=parts.len()).any(|count| {
+            crate::normalize_query(&parts[parts.len() - count..].join(" ")) == query
+        })
+    })
+}
 
 /// One candidate that matched a query. Borrows from the candidate list
 /// instead of copying it, so a search allocates nothing per candidate.
@@ -137,19 +180,35 @@ pub fn search<'a>(
     limit: usize,
     usage_of: impl Fn(&str) -> f64,
 ) -> Vec<Hit<'a>> {
-    let files_allowed = query.chars().filter(|c| *c != ' ').count() >= MIN_FILE_QUERY_CHARS;
+    let short_query = query.chars().filter(|c| *c != ' ').count() < MIN_FILE_QUERY_CHARS;
     let hits: Vec<Hit<'a>> = candidates
         .iter()
         .filter_map(|candidate| {
             // Files and folders match by their own rule: strong name matches
-            // only, with folders and the extension as support, and only once
-            // the query is long enough.
+            // only, with folders and the extension as support. Naming the
+            // whole file or a path to it is exact. Short queries need an exact
+            // match, which then ranks below anything the query starts.
             if let Some(facts) = &candidate.file {
-                if !files_allowed {
-                    return None;
-                }
                 let name = candidate.names.first()?;
-                let tier = file_tier(&name.key, facts, query)?;
+                // Naming the whole file or a path to it is exact. The path check
+                // allocates, so it runs only when the query ends with this
+                // file's whole name, which rules out almost every file for free.
+                // A full path (`/Users/...`, `iCloud Drive/...`) can name a file
+                // even when `file_tier` finds no match: it has words no folder
+                // word covers.
+                let names_path = |tier: Option<Tier>| {
+                    tier < Some(Tier::Exact)
+                        && ends_with_whole_name(&name.key, facts, query)
+                        && names_whole_path(candidate, query)
+                };
+                let tier = file_tier(&name.key, facts, query);
+                let mut tier = if names_path(tier) { Tier::Exact } else { tier? };
+                if short_query {
+                    if tier < Tier::Exact {
+                        return None;
+                    }
+                    tier = Tier::WordPrefix;
+                }
                 return Some(Hit {
                     candidate,
                     title: &name.text,
@@ -184,7 +243,99 @@ pub fn search<'a>(
         })
         .collect();
 
-    select_best(hits, limit, file_cap(limit))
+    let best = select_best(hits, limit, file_cap(limit));
+    with_typed_folder(best, candidates, query, limit)
+}
+
+/// The folder `query` named on the way to the file at `path`: the deepest
+/// folder above it with a word that some query word starts, counting only the
+/// query words the file's own name does not account for (a word starting no
+/// word of `name`). `None` if no query word names a folder above it.
+///
+/// `wags arch` for `~/Projects/wags/Archive.zip` -> `~/Projects/wags`;
+/// `school ex01` for `~/school/cse332/ex01.pdf` -> `~/school`, the folder the
+/// user typed, not the file's parent; `ex01 pdf` -> `None`.
+///
+/// `path.ancestors()` yields the path, then its parent, and so on up to `/`:
+/// skip the path itself. Words of a folder's name: [`words_of`].
+pub fn typed_folder<'p>(path: &'p Path, name: &NameKey, query: &str) -> Option<&'p Path> {
+    let supporting: Vec<&str> = query
+        .split(' ')
+        .filter(|word| !name.words().iter().any(|w| w.starts_with(*word)))
+        .collect();
+
+    path.ancestors().skip(1).find(|dir| {
+        dir.file_name().is_some_and(|folder| {
+            words_of(&folder.to_string_lossy())
+                .iter()
+                .any(|w| supporting.iter().any(|s| w.starts_with(*s)))
+        })
+    })
+}
+
+/// `hits` plus, as the last result, the folder the user typed to reach the
+/// best file that needed one: so `wags arch` offers `~/Projects/wags` after
+/// `Archive.zip`, to open and look around.
+///
+/// - The file: the first hit (they are in rank order) that is a file or
+///   folder whose name did not match the whole query (`hit.kind` is `None`:
+///   a folder or the extension helped).
+/// - The folder: [`typed_folder`] of its path (from `hit.candidate.action`,
+///   `Action::Open(path)`), found among `candidates` by its ID
+///   ([`crate::candidate::folder_id`]). Not indexed (excluded, or above the
+///   home folder): add nothing.
+/// - Already among `hits`: add nothing; it is shown once.
+/// - Otherwise it goes last, as a hit with `kind: None`, `keyword: None`,
+///   tier [`Tier::PathSupported`], usage 0, titled by the folder's name. If the
+///   list is full (`limit`), it replaces the last hit; with `limit` below 2,
+///   add nothing, so the file itself is never pushed out.
+pub fn with_typed_folder<'a>(
+    mut hits: Vec<Hit<'a>>,
+    candidates: &'a [Candidate],
+    query: &str,
+    limit: usize,
+) -> Vec<Hit<'a>> {
+    if limit < 2 {
+        return hits;
+    }
+    let Some(trigger) = hits
+        .iter()
+        .find(|hit| hit.candidate.file.is_some() && hit.kind.is_none())
+        .copied()
+    else {
+        return hits;
+    };
+    let Action::Open(path) = &trigger.candidate.action else {
+        return hits;
+    };
+    let Some(name) = trigger.candidate.names.first() else {
+        return hits;
+    };
+    let Some(folder_path) = typed_folder(path, &name.key, query) else {
+        return hits;
+    };
+    let Some(id) = folder_id(folder_path) else {
+        return hits;
+    };
+    if hits.iter().any(|hit| hit.candidate.id == id) {
+        return hits;
+    }
+    let Some(folder) = candidates.iter().find(|candidate| candidate.id == id) else {
+        return hits;
+    };
+
+    if hits.len() >= limit {
+        hits.pop();
+    }
+    hits.push(Hit {
+        candidate: folder,
+        title: folder.title(),
+        kind: None,
+        keyword: None,
+        tier: Tier::PathSupported,
+        usage: 0.0,
+    });
+    hits
 }
 
 /// How two hits compare: `Less` means `a` ranks first. Tier, then usage, then
@@ -733,21 +884,146 @@ mod tests {
         hits
     }
 
+    fn key(name: &str) -> NameKey {
+        NameKey::new(name)
+    }
+
     #[test]
-    fn files_join_from_the_third_character() {
+    fn the_typed_folder_is_the_one_the_query_named() {
+        let archive = Path::new("/Users/someone/Projects/wags/Archive.zip");
+        assert_eq!(typed_folder(archive, &key("Archive"), "wags arch"), Some(Path::new("/Users/someone/Projects/wags")));
+        assert_eq!(typed_folder(archive, &key("Archive"), "projects arch"), Some(Path::new("/Users/someone/Projects")));
+        let ex01 = Path::new("/Users/someone/school/cse332/ex01.pdf");
+        assert_eq!(
+            typed_folder(ex01, &key("ex01"), "school ex01"),
+            Some(Path::new("/Users/someone/school")),
+            "the folder typed, not the parent"
+        );
+        assert_eq!(typed_folder(ex01, &key("ex01"), "332 ex01"), Some(Path::new("/Users/someone/school/cse332")));
+    }
+
+    #[test]
+    fn no_folder_is_typed_when_the_name_or_extension_covers_the_query() {
+        let ex01 = Path::new("/Users/someone/school/cse332/ex01.pdf");
+        assert_eq!(typed_folder(ex01, &key("ex01"), "ex01 pdf"), None, "the extension is not a folder");
+        assert_eq!(typed_folder(ex01, &key("ex01"), "ex01"), None);
+    }
+
+    #[test]
+    fn a_file_found_through_a_folder_offers_that_folder_last() {
+        let candidates = [
+            file("/Users/someone/Projects/wags/Archive.zip"),
+            file("/Users/someone/Projects/wags/archive-notes.md"),
+            file("/Users/someone/Projects/wags"),
+            file("/Users/someone/Projects"),
+        ];
+        assert_eq!(
+            ids(&search(&candidates, "wags arch", 10, |_| 0.0)),
+            vec![
+                "file:/Users/someone/Projects/wags/Archive.zip",
+                "file:/Users/someone/Projects/wags/archive-notes.md",
+                "folder:/Users/someone/Projects/wags",
+            ],
+            "the folder once, after every file"
+        );
+    }
+
+    #[test]
+    fn the_typed_folder_takes_the_last_slot_of_a_full_list() {
+        let mut candidates: Vec<Candidate> = (0..5)
+            .map(|i| file(&format!("/Users/someone/wags/arch{i}.zip")))
+            .collect();
+        candidates.push(file("/Users/someone/wags"));
+        let hits = search(&candidates, "wags arch", 3, |_| 0.0);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[2].candidate.id, "folder:/Users/someone/wags");
+        assert!(
+            search(&candidates, "wags arch", 1, |_| 0.0)[0].candidate.id.starts_with("file:"),
+            "a one-result list keeps the file"
+        );
+    }
+
+    #[test]
+    fn no_folder_is_added_when_none_was_needed_or_it_is_already_shown() {
+        let candidates = [file("/Users/someone/wags/Archive.zip"), file("/Users/someone/wags")];
+        assert_eq!(ids(&search(&candidates, "archive", 10, |_| 0.0)), vec!["file:/Users/someone/wags/Archive.zip"]);
+        let unindexed = [file("/Users/someone/wags/Archive.zip")];
+        assert_eq!(search(&unindexed, "wags arch", 10, |_| 0.0).len(), 1, "an excluded folder is not invented");
+        // The folder "wags arch" matches the query itself, so it is already a
+        // result: Archive.zip inside it must not bring it in a second time.
+        let shown = [file("/Users/someone/wags arch/Archive.zip"), file("/Users/someone/wags arch")];
+        assert_eq!(
+            ids(&search(&shown, "wags arch", 10, |_| 0.0)),
+            vec!["folder:/Users/someone/wags arch", "file:/Users/someone/wags arch/Archive.zip"]
+        );
+    }
+
+    #[test]
+    fn short_queries_need_an_exact_file_name_and_rank_it_below_apps() {
         let candidates = [
             file("/Users/someone/go"),
+            file("/Users/someone/goal.txt"),
             candidate("app:/Applications/Google Chrome.app", Kind::App, &["Google Chrome"]),
         ];
         assert_eq!(ids(&search(&candidates, "g", 10, |_| 0.0)), vec!["app:/Applications/Google Chrome.app"]);
+        let hits = search(&candidates, "go", 10, |_| 0.0);
         assert_eq!(
-            ids(&search(&candidates, "go", 10, |_| 0.0)),
-            vec!["app:/Applications/Google Chrome.app"],
-            "an exact two-letter folder no longer outranks the app"
+            ids(&hits),
+            vec!["app:/Applications/Google Chrome.app", "folder:/Users/someone/go"],
+            "the exact folder is listed, below the app; goal.txt is not exact"
         );
-        let files = [file("/Users/someone/goal.txt")];
-        assert_eq!(search(&files, "goa", 10, |_| 0.0).len(), 1);
-        assert_eq!(search(&files, "g o", 10, |_| 0.0).len(), 0, "spaces do not count");
+        assert_eq!(hits[1].tier, Tier::WordPrefix);
+        assert_eq!(search(&candidates, "goa", 10, |_| 0.0).len(), 1, "from three characters, as usual");
+        assert!(
+            search(&candidates, "g o", 10, |_| 0.0).iter().all(|hit| hit.candidate.file.is_none()),
+            "spaces do not count"
+        );
+    }
+
+    #[test]
+    fn a_short_exact_folder_leads_when_nothing_starts_with_the_query() {
+        let candidates = [
+            file("/Users/someone/UW"),
+            candidate("app:/Applications/uTorrent Web.app", Kind::App, &["uTorrent Web"]),
+        ];
+        assert_eq!(
+            ids(&search(&candidates, "uw", 10, |_| 0.0)),
+            vec!["folder:/Users/someone/UW", "app:/Applications/uTorrent Web.app"]
+        );
+    }
+
+    #[test]
+    fn the_whole_file_name_with_its_extension_is_exact() {
+        let candidates = [file("/Users/someone/Desktop/Customized/Parth Kotwal Google.pdf")];
+        for query in ["Parth Kotwal Google.pdf", "parth kotwal google pdf"] {
+            let hits = search(&candidates, &crate::normalize_query(query), 10, |_| 0.0);
+            assert_eq!(hits[0].tier, Tier::Exact, "{query}");
+        }
+        let partial = search(&candidates, &crate::normalize_query("kotwal google.pdf"), 10, |_| 0.0);
+        assert!(partial[0].tier < Tier::Exact, "part of a name is not the whole name");
+    }
+
+    #[test]
+    fn a_pasted_path_is_exact() {
+        let candidates = [file("/Users/someone/Desktop/Customized/Parth Kotwal Google.pdf")];
+        for query in [
+            "desktop/customized/Parth Kotwal Google.pdf",
+            "~/Desktop/Customized/Parth Kotwal Google.pdf",
+            "/Users/someone/Desktop/Customized/Parth Kotwal Google.pdf",
+            "Customized/Parth Kotwal Google.pdf",
+        ] {
+            let hits = search(&candidates, &crate::normalize_query(query), 10, |_| 0.0);
+            assert_eq!(hits.len(), 1, "{query}");
+            assert_eq!(hits[0].tier, Tier::Exact, "{query}");
+        }
+    }
+
+    #[test]
+    fn an_icloud_path_is_written_as_finder_shows_it() {
+        let path = format!("/Users/someone/{}/Taxes/w2.pdf", crate::candidate::ICLOUD_DRIVE);
+        let candidates = [file(&path)];
+        let hits = search(&candidates, &crate::normalize_query("iCloud Drive/Taxes/w2.pdf"), 10, |_| 0.0);
+        assert_eq!(hits[0].tier, Tier::Exact);
     }
 
     #[test]

@@ -70,7 +70,7 @@ Swift-side summary for building the adapter:
 Owners: Rust exports and `milky.h` — core owner (the user writes the Rust side,
 learning-first). Swift adapter and linking — Swift owner.
 
-## Core changes — 2026-10-08
+## Core changes — 2026-10-08–09
 
 - Result `name` is now the display name Finder shows, from LaunchServices
   ("Find My", "Zoom", "Voice Memos"), not the bundle folder name. Paths, the
@@ -83,13 +83,21 @@ learning-first). Swift adapter and linking — Swift owner.
   `scripts/build.sh test`: 21 Swift tests pass; `milky-probe` reports ABI 2.
 - Matching is now accent-insensitive and camelCase-aware. Result order still
   comes entirely from Rust; no Swift change is required.
+- 2026-10-09 (later): queries split at punctuation like names, and a file's
+  whole name with its extension is an exact match, so completing the query
+  to a result's `title` (tab completion) finds that result first. Pasted
+  paths (`~/Desktop/...`, `/Users/...`, `iCloud Drive/...`) are exact too.
+  When a file matched through a folder the user typed (`wags arch`), that
+  folder is added as the last result. No contract change.
 - 2026-10-09: results now include walked files and folders (`kind` `file` /
   `folder`, `open` action, contract v4 unchanged). At most 40% of a result
   list is files unless nothing else matches. `match_kind` can be `"path"`
   (the name matched part of the query, folders or the extension the rest).
   Engine construction now also walks the home folder: about 0.1-0.4 s total
   here, so keep creating it off the main thread. Verified with
-  `scripts/build.sh test`: 27 Swift tests pass.
+  `scripts/build.sh test`: Rust file queries are returned through the v4 wire
+  format; Swift maps their IDs and open actions without re-ranking. Keep search
+  initialization off the main thread.
 - 2026-10-08: settings also match Apple's keywords, and `match_kind` can be
   `"keyword"` (only keywords matched; the title is the destination's default
   title). Additive, ABI stays 3; Swift ignores `match_kind`. Verified with
@@ -132,8 +140,9 @@ places, and contract v4". Swift-side summary:
 
 - `milky_abi_version()` and `MILKY_ABI_VERSION` are now 4. Everything in v3 is
   unchanged; v4 only adds values.
-- Result `kind` can also be `folder` (now: places such as Downloads, Trash,
-  Applications) or `file` (not produced yet; file search, same contract).
+- Result `kind` can also be `folder` (places and walked folders) or `file`
+  (walked files). Rust began producing both on 2026-10-09; no ABI bump was
+  needed because v4 defined these variants ahead of file search.
 - `action` can also be `{"type":"open","path":"/Users/x/Downloads"}`: open
   with `NSWorkspace.open(URL(fileURLWithPath:))`. Folders open in Finder; this
   is also how the Trash opens (verified: Finder shows its real Trash view).
@@ -145,14 +154,17 @@ places, and contract v4". Swift-side summary:
   "match_kind":"exact"}`.
 - Presentation: the native file/folder icon for the path
   (`NSWorkspace.icon(forFile:)`), subtitle under the title as for apps.
-- **Swift side wired 2026-10-08.** `ResultKind` accepts `folder` and `file`;
+- **Swift side wired 2026-10-08; verified against file results 2026-10-09.**
+  `ResultKind` accepts `folder` and `file`;
   the decoder accepts `open` only with an absolute path whose value matches the
   corresponding `folder:` or `file:` ID. `NativeAppOpener` uses
   `NSWorkspace.open(URL(fileURLWithPath:))`, icon lookup uses the same path,
   and selection recording continues to send the stable destination IDs.
-  Real-engine tests cover Downloads, Applications, and Utilities; fixture
-  snapshots cover the native folder icon. `file` is decoded and validated but
-  no Rust file result is produced yet.
+  Real-engine tests cover Downloads, Applications, Utilities, and a project
+  source file; fixture snapshots cover the native folder icon. File icons use
+  `NSWorkspace.icon(forFile:)`, and the declared open action goes through
+  `NSWorkspace.open` for the system's default app. The core still owns file
+  selection, its result cap, and ranking.
 
 ### Selection events — agreed and wired 2026-10-08
 
@@ -210,3 +222,19 @@ events and durable usage history". Swift-side summary:
 - Selection messages and durable usage persistence were added on 2026-10-08;
   the adapter implementation is documented above. App discovery is still the
   Rust engine's startup snapshot; restart Milky to pick up installed/removed apps.
+
+## Native file inspection and action menu — 2026-10-09
+
+Verified: ABI 4 `file` results provide an absolute `open` path, and `app`,
+`folder`, and `setting` actions provide the URL needed for their native menu
+items. Swift uses these existing values for Quick Look file inspection, Open,
+Reveal in Finder, and Copy Path or Link. It does not request new discovery or
+ranking fields and does not reorder the response. The full bridge suite passes.
+
+Pending core decision, not an implemented contract: `record_selection` has only
+`opened` and `failed` outcomes for the primary action. Swift therefore records
+only primary Open; it does not describe Reveal or Copy as a launch. If action
+usage should influence ranking or appear in history, agree on an action-aware
+event schema with the core owner before sending those events. Preview snippets
+or extracted document text would likewise require future core result metadata;
+Quick Look file inspection does not depend on them.

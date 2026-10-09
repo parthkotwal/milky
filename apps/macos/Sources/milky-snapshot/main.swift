@@ -26,6 +26,14 @@ struct MilkySnapshot {
                 try await waitForSearch(state)
             }
         }
+        if let selectedTitle = options.selectedTitle {
+            guard let result = state.results.first(where: { $0.title == selectedTitle }) else {
+                throw SnapshotError.selectionUnavailable
+            }
+            state.select(result.id)
+        }
+        if options.inspect { state.toggleInspection() }
+        if options.actions { state.toggleActionMenu() }
 
         let size = NSSize(width: 640, height: 554)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
@@ -35,11 +43,12 @@ struct MilkySnapshot {
         if let appearanceName = options.appearanceName {
             window.appearance = NSAppearance(named: appearanceName)
         }
-        let hostingView = NSHostingView(rootView: LauncherView(state: state, fixtures: true, dismiss: {}))
+        let hostingView = NSHostingView(rootView: LauncherView(state: state, fixtures: true,
+                                                               design: options.design, dismiss: {}))
         hostingView.frame = NSRect(origin: .zero, size: size)
         window.contentView = hostingView
         window.contentView?.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(250))
+        try await Task.sleep(for: .milliseconds(options.inspect ? 800 : 250))
         hostingView.layoutSubtreeIfNeeded()
 
         let pixelsPerPoint = 2
@@ -97,6 +106,10 @@ private struct SnapshotOptions {
     let outputURL: URL
     let appearanceName: NSAppearance.Name?
     let captureDuringSearch: Bool
+    let design: PanelDesign
+    let selectedTitle: String?
+    let inspect: Bool
+    let actions: Bool
 
     init(arguments: [String]) throws {
         var query = ""
@@ -104,6 +117,10 @@ private struct SnapshotOptions {
         var outputURL = URL(fileURLWithPath: ".build/snapshots/milky.png", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
         var appearanceName: NSAppearance.Name?
         var captureDuringSearch = false
+        var design: PanelDesign = .hybrid
+        var selectedTitle: String?
+        var inspect = false
+        var actions = false
         var index = 0
 
         while index < arguments.count {
@@ -113,11 +130,17 @@ private struct SnapshotOptions {
                 index += 1
                 continue
             }
+            if argument == "--inspect" || argument == "--actions" {
+                if argument == "--inspect" { inspect = true } else { actions = true }
+                index += 1
+                continue
+            }
             guard index + 1 < arguments.count else { throw SnapshotError.usage }
             let value = arguments[index + 1]
             switch argument {
             case "--query": query = value
             case "--previous-query": previousQuery = value
+            case "--select": selectedTitle = value
             case "--output": outputURL = URL(fileURLWithPath: value)
             case "--appearance":
                 switch value {
@@ -125,6 +148,9 @@ private struct SnapshotOptions {
                 case "dark": appearanceName = .darkAqua
                 default: throw SnapshotError.usage
                 }
+            case "--design":
+                guard let value = PanelDesign(rawValue: value) else { throw SnapshotError.usage }
+                design = value
             default: throw SnapshotError.usage
             }
             index += 2
@@ -135,6 +161,11 @@ private struct SnapshotOptions {
         self.outputURL = outputURL.standardizedFileURL
         self.appearanceName = appearanceName
         self.captureDuringSearch = captureDuringSearch
+        self.design = design
+        guard !(inspect && actions) else { throw SnapshotError.usage }
+        self.selectedTitle = selectedTitle
+        self.inspect = inspect
+        self.actions = actions
     }
 }
 
@@ -145,11 +176,12 @@ private enum SnapshotError: LocalizedError {
     case encoding
     case focusChanged
     case searchTimedOut
+    case selectionUnavailable
 
     var errorDescription: String? {
         switch self {
         case .usage:
-            return "Usage: milky-snapshot [--previous-query TEXT] [--query TEXT] [--during-search] [--appearance light|dark] [--output PATH]"
+            return "Usage: milky-snapshot [--query TEXT] [--select TITLE] [--inspect|--actions] [--previous-query TEXT] [--during-search] [--design balanced|compact|guided|hybrid] [--appearance light|dark] [--output PATH]"
         case .activationPolicy:
             return "Could not set the snapshot process to a non-activating policy."
         case .bitmap:
@@ -160,6 +192,8 @@ private enum SnapshotError: LocalizedError {
             return "The foreground application changed while rendering; snapshot discarded."
         case .searchTimedOut:
             return "Fixture search did not finish before the snapshot timeout."
+        case .selectionUnavailable:
+            return "The selected title is not in the fixture results."
         }
     }
 }

@@ -4,6 +4,13 @@ import Observation
 @MainActor
 public protocol AppOpening {
     func open(_ result: AppResult) async throws
+    func performSecondary(_ action: ResultMenuAction, on result: AppResult) async throws
+}
+
+public extension AppOpening {
+    func performSecondary(_ action: ResultMenuAction, on result: AppResult) async throws {
+        throw CocoaError(.featureUnsupported)
+    }
 }
 
 @MainActor @Observable
@@ -15,6 +22,10 @@ public final class LauncherState {
     public private(set) var showsProgress = false
     public private(set) var isOpening = false
     public private(set) var errorMessage: String?
+    public private(set) var statusMessage: String?
+    public private(set) var inspectedResultID: String?
+    public private(set) var actionMenuResultID: String?
+    public private(set) var selectedActionIndex = 0
     public var onOpened: (() -> Void)?
 
     private let provider: any SearchProvider
@@ -34,6 +45,18 @@ public final class LauncherState {
 
     public var selected: AppResult? { results.first { $0.id == selectedID } }
     public var canOpen: Bool { active && !isSearching && !isOpening && selected != nil }
+    public var inspectedResult: AppResult? {
+        guard let inspectedResultID else { return nil }
+        return results.first { $0.id == inspectedResultID && $0.kind == .file }
+    }
+    public var menuActions: [ResultMenuAction] {
+        guard let selected else { return [] }
+        switch selected.kind {
+        case .file: return [.open, .inspect, .reveal, .copyLocation]
+        case .app, .folder: return [.open, .reveal, .copyLocation]
+        case .setting: return [.open, .copyLocation]
+        }
+    }
     public var inlineSuggestion: AppResult? {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, let result = results.first,
@@ -54,6 +77,7 @@ public final class LauncherState {
         guard !isOpening else { return }
         let changed = value != query
         query = value
+        statusMessage = nil
         search(resetSelection: changed)
     }
 
@@ -66,6 +90,7 @@ public final class LauncherState {
     }
 
     private func search(resetSelection: Bool, allowEmpty: Bool = false) {
+        closeOverlays()
         generation += 1
         let token = generation
         request?.cancel()
@@ -109,21 +134,37 @@ public final class LauncherState {
 
     public func select(_ id: String) {
         guard !isSearching, !isOpening, results.contains(where: { $0.id == id }) else { return }
+        if selectedID != id {
+            closeOverlays()
+            statusMessage = nil
+        }
         selectedID = id
     }
 
     public func moveSelection(_ offset: Int) {
+        if actionMenuResultID != nil {
+            let actions = menuActions
+            guard !actions.isEmpty else { return }
+            selectedActionIndex = min(max(selectedActionIndex + offset, 0), actions.count - 1)
+            return
+        }
+        if inspectedResultID != nil { return }
         guard !isSearching, !isOpening, !results.isEmpty else { return }
         let current = results.firstIndex { $0.id == selectedID } ?? 0
         selectedID = results[min(max(current + offset, 0), results.count - 1)].id
     }
 
     public func openSelected() async {
+        if actionMenuResultID != nil {
+            await performSelectedMenuAction()
+            return
+        }
         guard canOpen, let result = selected else { return }
         let eventQuery = query
         let shownIDs = results.map(\.id)
         isOpening = true
         errorMessage = nil
+        statusMessage = nil
         let token = generation
         do {
             try await opener.open(result)
@@ -138,6 +179,74 @@ public final class LauncherState {
         isOpening = false
     }
 
+    public func toggleInspection() {
+        guard canOpen, selected?.kind == .file else { return }
+        if inspectedResultID == selectedID {
+            inspectedResultID = nil
+        } else {
+            actionMenuResultID = nil
+            inspectedResultID = selectedID
+        }
+    }
+
+    public func toggleActionMenu() {
+        guard canOpen else { return }
+        if actionMenuResultID == selectedID {
+            actionMenuResultID = nil
+        } else {
+            inspectedResultID = nil
+            actionMenuResultID = selectedID
+            selectedActionIndex = 0
+        }
+    }
+
+    @discardableResult
+    public func closeOverlay() -> Bool {
+        guard inspectedResultID != nil || actionMenuResultID != nil else { return false }
+        closeOverlays()
+        return true
+    }
+
+    private func closeOverlays() {
+        inspectedResultID = nil
+        actionMenuResultID = nil
+        selectedActionIndex = 0
+    }
+
+    public func chooseMenuAction(_ action: ResultMenuAction) async {
+        guard actionMenuResultID == selectedID, menuActions.contains(action), canOpen,
+              let result = selected else { return }
+        actionMenuResultID = nil
+        switch action {
+        case .open:
+            await openSelected()
+        case .inspect:
+            inspectedResultID = result.id
+        case .reveal, .copyLocation:
+            isOpening = true
+            errorMessage = nil
+            statusMessage = nil
+            let token = generation
+            do {
+                try await opener.performSecondary(action, on: result)
+                if active, generation == token {
+                    if action == .reveal { onOpened?() }
+                    else { statusMessage = result.kind == .setting ? "Link copied" : "Path copied" }
+                }
+            } catch {
+                if active, generation == token {
+                    errorMessage = "Couldn’t \(action.title(for: result).lowercased()). \(error.localizedDescription)"
+                }
+            }
+            isOpening = false
+        }
+    }
+
+    public func performSelectedMenuAction() async {
+        guard actionMenuResultID != nil, menuActions.indices.contains(selectedActionIndex) else { return }
+        await chooseMenuAction(menuActions[selectedActionIndex])
+    }
+
     private func recordSelection(query: String, shown: [String], selected: String,
                                  outcome: SelectionOutcome) {
         guard let eventRecorder else { return }
@@ -148,6 +257,7 @@ public final class LauncherState {
 
     public func dismiss() {
         active = false
+        closeOverlays()
         generation += 1
         request?.cancel(); progress?.cancel()
         isSearching = false; showsProgress = false
@@ -155,7 +265,8 @@ public final class LauncherState {
 
     public func beginSession() {
         active = true
-        query = ""; results = []; selectedID = nil; errorMessage = nil
+        query = ""; results = []; selectedID = nil; errorMessage = nil; statusMessage = nil
+        closeOverlays()
         generation += 1
         request?.cancel(); progress?.cancel()
         isSearching = false; showsProgress = false

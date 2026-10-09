@@ -25,15 +25,45 @@ public final class NativeAppOpener: AppOpening {
         }
     }
 
+    public func performSecondary(_ action: ResultMenuAction, on result: AppResult) async throws {
+        switch action {
+        case .open, .inspect:
+            throw OpenError.unsupportedAction
+        case .reveal:
+            let url: URL
+            switch result.action {
+            case .launch(let value), .open(let value): url = value
+            case .openURL: throw OpenError.unsupportedAction
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw OpenError.destinationOpenFailed
+            }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        case .copyLocation:
+            let value: String
+            switch result.action {
+            case .launch(let url), .open(let url): value = url.path
+            case .openURL(let url): value = url.absoluteString
+            }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            guard pasteboard.setString(value, forType: .string) else { throw OpenError.copyFailed }
+        }
+    }
+
     private enum OpenError: LocalizedError {
         case activationFailed
         case openFailed
         case destinationOpenFailed
+        case unsupportedAction
+        case copyFailed
         var errorDescription: String? {
             switch self {
             case .activationFailed: "The application could not be activated. Try opening it from Finder."
             case .openFailed: "The destination could not be opened. Try opening it from System Settings."
             case .destinationOpenFailed: "The item could not be opened. Check that it still exists and try again."
+            case .unsupportedAction: "This action is unavailable for this result."
+            case .copyFailed: "The location could not be copied."
             }
         }
     }

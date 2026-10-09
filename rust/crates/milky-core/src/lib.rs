@@ -14,13 +14,16 @@ pub mod settings;
 pub mod storage;
 pub mod usage;
 
-/// Normalize text for matching: fold case, accents, compatibility forms, and
-/// invisible formatting marks (see [`matching::fold`]), trim, and collapse runs
-/// of whitespace to single spaces. Applied to queries and to candidate names
-/// alike, so both sides are compared in the same form.
+/// Normalize text for matching: fold case, accents, compatibility forms,
+/// invisible formatting marks, and dashes (see [`matching::fold`]); treat
+/// other punctuation and symbols as spaces; trim; and collapse runs of spaces.
+/// Applied to queries and to candidate names alike, so both sides are compared
+/// in the same form, and split into words the way names are: `google.pdf` ->
+/// `google pdf`, `desktop/customized` -> `desktop customized`.
 pub fn normalize_query(input: &str) -> String {
     matching::fold(input)
-        .split_whitespace()
+        .split(|c: char| c.is_whitespace() || matching::is_separator(c))
+        .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -64,6 +67,15 @@ mod tests {
     fn strips_invisible_formatting_marks() {
         // WhatsApp's bundle name starts with an invisible left-to-right mark.
         assert_eq!(normalize_query("\u{200E}WhatsApp"), "whatsapp");
+    }
+
+    #[test]
+    fn punctuation_separates_words_like_spaces() {
+        assert_eq!(normalize_query("Parth Kotwal Google.pdf"), "parth kotwal google pdf");
+        assert_eq!(normalize_query("~/Desktop/Customized/a_b.txt"), "desktop customized a b txt");
+        assert_eq!(normalize_query("Read & Speak (Live)"), "read speak live");
+        assert_eq!(normalize_query("wi-fi"), "wifi", "dashes still join");
+        assert_eq!(normalize_query("../"), "");
     }
 
     #[test]

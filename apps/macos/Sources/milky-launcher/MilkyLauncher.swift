@@ -24,6 +24,12 @@ private final class LauncherPanel: NSPanel {
 @MainActor
 private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let fixtures = CommandLine.arguments.contains("--fixtures")
+    private var panelDesign: PanelDesign {
+        guard fixtures,
+              let value = CommandLine.arguments.first(where: { $0.hasPrefix("--design=") })?.dropFirst("--design=".count),
+              let design = PanelDesign(rawValue: String(value)) else { return .hybrid }
+        return design
+    }
     private let rust = RustSearchProvider()
     private lazy var state = LauncherState(provider: fixtures ? FixtureSearchProvider() : rust,
                                            opener: NativeAppOpener(),
@@ -75,9 +81,10 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         panel.isMovableByWindowBackground = true
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.dismissAction = { [weak self] in self?.dismiss(restoreFocus: true) }
-        panel.contentView = NSHostingView(rootView: LauncherView(state: state, fixtures: fixtures) { [weak self] in
-            self?.dismiss(restoreFocus: true)
+        panel.dismissAction = { [weak self] in self?.dismissOrClose() }
+        panel.contentView = NSHostingView(rootView: LauncherView(state: state, fixtures: fixtures,
+                                                                 design: panelDesign) { [weak self] in
+            self?.dismissOrClose()
         })
         if CommandLine.arguments.contains("--appearance=light") { panel.appearance = NSAppearance(named: .aqua) }
         if CommandLine.arguments.contains("--appearance=dark") { panel.appearance = NSAppearance(named: .darkAqua) }
@@ -152,11 +159,31 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = edit
         main.addItem(editItem)
+        let actionsItem = NSMenuItem()
+        let actionsMenu = NSMenu(title: "Results")
+        let inspect = actionsMenu.addItem(withTitle: "Inspect File", action: #selector(inspectSelectedFile), keyEquivalent: "p")
+        inspect.target = self
+        let showActions = actionsMenu.addItem(withTitle: "Show Actions", action: #selector(showSelectedActions), keyEquivalent: "k")
+        showActions.target = self
+        actionsItem.submenu = actionsMenu
+        main.addItem(actionsItem)
         NSApp.mainMenu = main
     }
 
     @objc private func showFromMenu() { show() }
     @objc private func quitApp() { NSApp.terminate(nil) }
+    @objc private func inspectSelectedFile() {
+        guard session.isPresented else { return }
+        state.toggleInspection()
+    }
+    @objc private func showSelectedActions() {
+        guard session.isPresented else { return }
+        state.toggleActionMenu()
+    }
+
+    private func dismissOrClose() {
+        if !state.closeOverlay() { dismiss(restoreFocus: true) }
+    }
 
     private func show() {
         guard !terminating else { return }

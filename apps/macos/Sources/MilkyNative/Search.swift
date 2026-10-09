@@ -8,6 +8,22 @@ public enum ResultAction: Equatable, Sendable {
     case open(URL)
 }
 
+public enum ResultMenuAction: String, CaseIterable, Sendable {
+    case open
+    case inspect
+    case reveal
+    case copyLocation
+
+    public func title(for result: AppResult) -> String {
+        switch self {
+        case .open: result.kind == .app ? "Launch or Switch" : "Open"
+        case .inspect: "Inspect File"
+        case .reveal: "Reveal in Finder"
+        case .copyLocation: result.kind == .setting ? "Copy Link" : "Copy Path"
+        }
+    }
+}
+
 public struct AppResult: Identifiable, Equatable, Sendable {
     public let id: String
     public let kind: ResultKind
@@ -82,6 +98,7 @@ public struct FixtureSearchProvider: SearchProvider {
         folder("Downloads", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")),
         folder("Utilities", URL(fileURLWithPath: "/Applications/Utilities", isDirectory: true)),
         folder("Trash", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")),
+        file("Search.swift", URL(fileURLWithPath: #filePath)),
         app("Milky Research — A Very Long Application Name for Layout Inspection", "/tmp/Milky Fixtures/Research/An intentionally long parent directory/Application Previews/Milky Research.app"),
         app("Unavailable Application", "/tmp/Milky Fixtures/Unavailable.app"),
     ]
@@ -96,6 +113,13 @@ public struct FixtureSearchProvider: SearchProvider {
                   action: .open(url))
     }
 
+    private static func file(_ name: String, _ url: URL) -> AppResult {
+        AppResult(id: "file:\(url.path)", kind: .file, title: name,
+                  subtitle: url.deletingLastPathComponent().path, action: .open(url))
+    }
+
+    private static let mixedResultIndexes = [3, 6, 10, 13, 8, 7, 0, 12, 9, 4]
+
     private static func setting(_ id: String, _ title: String, _ subtitle: String, _ url: String) -> AppResult {
         AppResult(id: id, kind: .setting, title: title, subtitle: subtitle, action: .openURL(URL(string: url)!))
     }
@@ -105,6 +129,7 @@ public struct FixtureSearchProvider: SearchProvider {
         try await Task.sleep(for: .milliseconds(key == "slow" ? 1200 : 60))
         if key == "error" { throw FixtureError.unavailable }
         if key == "all" || key == "slow" { return Self.results }
+        if key == "mixed" { return Self.mixedResultIndexes.map { Self.results[$0] } }
         if key == "vsc" { return Self.results.filter { $0.title == "Visual Studio Code" } }
         return Self.results.filter { $0.title.localizedCaseInsensitiveContains(key) || $0.subtitle.localizedCaseInsensitiveContains(key) }
     }

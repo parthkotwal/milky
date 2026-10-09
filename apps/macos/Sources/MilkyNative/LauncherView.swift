@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+public enum PanelDesign: String, CaseIterable, Sendable {
+    case balanced
+    case compact
+    case guided
+    case hybrid
+}
+
 enum LauncherTheme {
     static let rowHeight: CGFloat = 54
     static let inset: CGFloat = 16
@@ -27,53 +34,32 @@ public struct LauncherView: View {
     @Bindable var state: LauncherState
     let dismiss: () -> Void
     let fixtures: Bool
+    let design: PanelDesign
 
-    public init(state: LauncherState, fixtures: Bool = true, dismiss: @escaping () -> Void) {
+    public init(state: LauncherState, fixtures: Bool = true, design: PanelDesign = .hybrid,
+                dismiss: @escaping () -> Void) {
         self.state = state
         self.fixtures = fixtures
+        self.design = design
         self.dismiss = dismiss
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: design == .compact ? 9 : 12) {
                 Image(systemName: "magnifyingglass").font(.system(size: 22)).foregroundStyle(LauncherTheme.secondary)
                 QueryField(value: Binding(get: { state.query }, set: { state.setQuery($0) }),
                            enabled: !state.isOpening, up: { state.moveSelection(-1) },
-                           down: { state.moveSelection(1) }, submit: open, dismiss: dismiss,
+                           down: { state.moveSelection(1) }, submit: open, dismiss: dismissOrClose,
                            acceptSuggestion: { state.acceptInlineSuggestion() })
-                    .frame(width: state.query.isEmpty ? nil : LauncherTheme.queryWidth(for: state.query), height: 40)
-                    .accessibilityLabel("Search apps and settings")
-                if let suggestion = state.inlineSuggestion {
-                    Button {
-                        state.acceptInlineSuggestion()
-                    } label: {
-                        HStack(spacing: 7) {
-                            Text("— \(suggestion.title)")
-                                .font(.system(size: 14))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text("tab")
-                                .font(.system(size: 10, weight: .medium))
-                                .padding(.horizontal, 5).padding(.vertical, 3)
-                                .background(.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 5))
-                        }
-                        .foregroundStyle(LauncherTheme.secondary)
-                        .padding(.horizontal, 9).padding(.vertical, 6)
-                        .background(.primary.opacity(0.055), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: 235)
-                    .disabled(state.isSearching || state.isOpening)
-                    .opacity(state.isSearching || state.isOpening ? 0.5 : 1)
-                    .help("Complete with \(suggestion.title) (Tab)")
-                    .accessibilityLabel("Complete query with \(suggestion.title)")
-                    .accessibilityHint("Press Tab to replace the query with this top result")
-                    .accessibilityAddTraits(.isButton)
-                    .transition(reduceMotion ? .identity : .opacity)
+                    .frame(width: state.query.isEmpty ? nil : LauncherTheme.queryWidth(for: state.query),
+                           height: design == .compact ? 34 : 40)
+                    .accessibilityLabel("Search your Mac")
+                if design != .guided, let suggestion = state.inlineSuggestion {
+                    suggestionButton(suggestion, inline: true)
                 }
                 Spacer(minLength: 0)
-                if let suggestion = state.inlineSuggestion {
+                if design == .balanced || design == .hybrid, let suggestion = state.inlineSuggestion {
                     ResultIcon(result: suggestion).frame(width: 32, height: 32)
                         .transition(reduceMotion ? .identity : .opacity)
                 }
@@ -81,7 +67,22 @@ public struct LauncherView: View {
                     ProgressView().controlSize(.small).accessibilityLabel(state.isOpening ? "Opening application" : "Searching")
                 }
             }
-            .padding(LauncherTheme.inset)
+            .padding(.horizontal, LauncherTheme.inset)
+            .padding(.vertical, design == .compact ? 10 : LauncherTheme.inset)
+            if design == .guided, let suggestion = state.inlineSuggestion {
+                HStack(spacing: 10) {
+                    Text("TOP MATCH")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .tracking(0.8)
+                        .foregroundStyle(LauncherTheme.secondary)
+                        .frame(width: 84, alignment: .leading)
+                    ResultIcon(result: suggestion).frame(width: 22, height: 22)
+                    suggestionButton(suggestion, inline: false)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, LauncherTheme.inset)
+                .padding(.bottom, 12)
+            }
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -101,21 +102,50 @@ public struct LauncherView: View {
                 .padding(LauncherTheme.inset)
                 .accessibilityElement(children: .contain)
             }
+            if let status = state.statusMessage {
+                HStack {
+                    Image(systemName: "checkmark.circle")
+                    Text(status)
+                    Spacer()
+                }
+                .font(LauncherTheme.subtitle)
+                .foregroundStyle(LauncherTheme.secondary)
+                .padding(.horizontal, LauncherTheme.inset)
+                .padding(.vertical, 7)
+            }
             Divider()
-            HStack(spacing: 14) {
+            HStack(spacing: design == .compact ? 10 : 14) {
                 if fixtures {
                     Label("Fixtures", systemImage: "testtube.2")
                         .help("Development fixtures only. No Rust search or usage recording.")
                 } else {
-                    Label("Apps & Settings", systemImage: "square.grid.2x2")
+                    Label("Local Results", systemImage: "square.grid.2x2")
                 }
                 Spacer()
-                Text("↑↓ Navigate")
-                Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : LauncherTheme.secondary)
-                Text("esc Close")
+                if state.actionMenuResultID != nil {
+                    Text("↑↓ Choose")
+                    Text("↵ Run")
+                    Text("esc Back")
+                } else if state.inspectedResultID != nil {
+                    Text("↵ Open")
+                    Text("esc Back")
+                } else {
+                    if design != .compact { Text("↑↓ Navigate") }
+                    if state.selected?.kind == .file {
+                        Button("⌘P Inspect") { state.toggleInspection() }
+                            .buttonStyle(.plain).disabled(!state.canOpen)
+                    }
+                    if state.selected != nil {
+                        Button("⌘K Actions") { state.toggleActionMenu() }
+                            .buttonStyle(.plain).disabled(!state.canOpen)
+                    }
+                    Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : LauncherTheme.secondary)
+                    Text("esc Close")
+                }
             }
             .font(LauncherTheme.hint).foregroundStyle(LauncherTheme.secondary)
-            .padding(.horizontal, LauncherTheme.inset).padding(.vertical, 11)
+            .padding(.horizontal, LauncherTheme.inset)
+            .padding(.vertical, design == .compact ? 8 : 11)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: LauncherTheme.corner))
@@ -130,8 +160,43 @@ public struct LauncherView: View {
         }
     }
 
+    private func suggestionButton(_ suggestion: AppResult, inline: Bool) -> some View {
+        Button {
+            state.acceptInlineSuggestion()
+        } label: {
+            HStack(spacing: 7) {
+                Text(inline ? "— \(suggestion.title)" : suggestion.title)
+                    .font(.system(size: inline ? 14 : 13, weight: inline ? .regular : .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("tab")
+                    .font(.system(size: 10, weight: .medium))
+                    .padding(.horizontal, 5).padding(.vertical, 3)
+                    .background(.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 5))
+            }
+            .foregroundStyle(inline ? LauncherTheme.secondary : Color.primary)
+            .padding(.horizontal, inline ? 9 : 0)
+            .padding(.vertical, inline ? 6 : 0)
+            .background(inline ? Color.primary.opacity(0.055) : .clear,
+                        in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: inline ? 235 : 300, alignment: .leading)
+        .disabled(state.isSearching || state.isOpening)
+        .opacity(state.isSearching || state.isOpening ? 0.5 : 1)
+        .help("Complete with \(suggestion.title) (Tab)")
+        .accessibilityLabel("Complete query with \(suggestion.title)")
+        .accessibilityHint("Press Tab to replace the query with this top result")
+        .accessibilityAddTraits(.isButton)
+        .transition(reduceMotion ? .identity : .opacity)
+    }
+
     @ViewBuilder private var content: some View {
-        if state.results.isEmpty {
+        if let result = state.inspectedResult {
+            FileInspectionView(result: result) { state.closeOverlay() }
+        } else if state.actionMenuResultID != nil, let result = state.selected {
+            actionMenu(for: result)
+        } else if state.results.isEmpty {
             if state.isSearching && !state.showsProgress {
                 Color.clear
             } else {
@@ -173,9 +238,63 @@ public struct LauncherView: View {
         }
     }
 
+    private func actionMenu(for result: AppResult) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                ResultIcon(result: result)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Actions for \(result.title)")
+                        .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(1)
+                    Text(result.subtitle).font(LauncherTheme.subtitle)
+                        .foregroundStyle(LauncherTheme.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer()
+                Button("Back") { state.closeOverlay() }
+                    .buttonStyle(.plain)
+            }
+            .padding(LauncherTheme.inset)
+            Divider()
+            ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
+                let highlighted = state.selectedActionIndex == index
+                Button {
+                    Task { await state.chooseMenuAction(action) }
+                } label: {
+                    HStack {
+                        Image(systemName: actionSymbol(action))
+                            .frame(width: 22)
+                        Text(action.title(for: result))
+                        Spacer()
+                        if highlighted { Image(systemName: "return") }
+                    }
+                    .font(LauncherTheme.title)
+                    .padding(.horizontal, 14)
+                    .frame(height: 46)
+                    .background(highlighted ? Color.accentColor.opacity(0.13) : .clear,
+                                in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(highlighted ? .isSelected : [])
+            }
+            .padding(.horizontal, 8)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func actionSymbol(_ action: ResultMenuAction) -> String {
+        switch action {
+        case .open: "arrow.up.right.square"
+        case .inspect: "eye"
+        case .reveal: "folder"
+        case .copyLocation: "doc.on.doc"
+        }
+    }
+
     private var emptyTitle: String {
         if state.errorMessage != nil && state.results.isEmpty { return "Search unavailable" }
-        if state.query.isEmpty { return fixtures ? "Search fixture results" : "Search apps and settings" }
+        if state.query.isEmpty { return fixtures ? "Search fixture results" : "Search your Mac" }
         if state.isSearching { return state.showsProgress ? "Searching…" : "" }
         if state.errorMessage != nil { return "Search unavailable" }
         return "No matching results"
@@ -189,28 +308,37 @@ public struct LauncherView: View {
 
     private var emptySubtitle: String {
         if state.errorMessage != nil { return "Change your query or retry below." }
-        if state.isSearching { return "Looking through applications." }
+        if state.isSearching { return "Searching local results." }
         if state.query.isEmpty {
             return fixtures
                 ? "Try Safari, Calendar, or IDLE. Type all to inspect every fixture."
-                : "Type an app or setting name to get started."
+                : "Type an app, file, folder, or setting name."
         }
-        return "Try another application name."
+        return "Try another name or path."
     }
 
     private func row(_ result: AppResult) -> some View {
         let selected = state.selectedID == result.id
-        return HStack(spacing: 12) {
-            ResultIcon(result: result)
-            VStack(alignment: .leading, spacing: 3) {
+        return HStack(spacing: design == .compact ? 9 : 12) {
+            ResultIcon(result: result).frame(width: design == .compact ? 26 : 32,
+                                             height: design == .compact ? 26 : 32)
+            VStack(alignment: .leading, spacing: design == .compact ? 1 : 3) {
                 Text(result.title).font(LauncherTheme.title).lineLimit(1)
                 Text(result.subtitle).font(LauncherTheme.subtitle)
                     .foregroundStyle(LauncherTheme.secondary).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
+            if design != .balanced {
+                Text(kindLabel(result.kind))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(LauncherTheme.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5))
+            }
             if selected { Image(systemName: "return").font(LauncherTheme.subtitle).foregroundStyle(LauncherTheme.secondary) }
         }
-        .padding(.horizontal, 12).frame(height: LauncherTheme.rowHeight)
+        .padding(.horizontal, 12)
+        .frame(height: design == .compact ? 44 : design == .guided ? 58 : LauncherTheme.rowHeight)
         .background(selected ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 7))
         .overlay(alignment: .leading) {
             if selected { RoundedRectangle(cornerRadius: 2).fill(LauncherTheme.secondary).frame(width: 3, height: 24) }
@@ -226,6 +354,15 @@ public struct LauncherView: View {
         .accessibilityAction(named: "Select") { state.select(result.id) }
     }
 
+    private func kindLabel(_ kind: ResultKind) -> String {
+        switch kind {
+        case .app: "App"
+        case .setting: "Setting"
+        case .folder: "Folder"
+        case .file: "File"
+        }
+    }
+
     private func announce(_ message: String) {
         guard NSWorkspace.shared.isVoiceOverEnabled else { return }
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
@@ -233,6 +370,9 @@ public struct LauncherView: View {
     }
 
     private func open() { Task { await state.openSelected() } }
+    private func dismissOrClose() {
+        if !state.closeOverlay() { dismiss() }
+    }
 }
 
 private struct ResultIcon: View {
@@ -277,9 +417,9 @@ private struct QueryField: NSViewRepresentable {
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 24)
-        field.placeholderString = "Search apps and settings…"
-        field.setAccessibilityLabel("Search apps and settings")
-        field.setAccessibilityHelp("Type an app or setting name. Press Tab to complete the top suggestion, use Up and Down to select a result, Return to open, and Escape to close.")
+        field.placeholderString = "Search your Mac…"
+        field.setAccessibilityLabel("Search your Mac")
+        field.setAccessibilityHelp("Type a destination name. Tab completes the top suggestion. Up and Down select a result or action. Return opens or runs it. Command K shows actions, Command P inspects a file, and Escape goes back or closes.")
         field.delegate = context.coordinator
         return field
     }

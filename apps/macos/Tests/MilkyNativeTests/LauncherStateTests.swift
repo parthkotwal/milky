@@ -198,6 +198,15 @@ private actor SelectionRecorder: SelectionEventRecording {
         let folderImage = try XCTUnwrap(NSBitmapImageRep(data: folderData))
         XCTAssertEqual(folderImage.pixelsWide, 64)
         XCTAssertEqual(folderImage.pixelsHigh, 64)
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+        let file = AppResult(id: "file:\(sourceURL.path)", kind: .file,
+                             title: sourceURL.lastPathComponent, subtitle: "Tests", action: .open(sourceURL))
+        let fileDataValue = await IconCache.shared.data(for: file)
+        let fileData = try XCTUnwrap(fileDataValue)
+        let fileImage = try XCTUnwrap(NSBitmapImageRep(data: fileData))
+        XCTAssertEqual(fileImage.pixelsWide, 64)
+        XCTAssertEqual(fileImage.pixelsHigh, 64)
     }
 
     func testSettingsResultUsesItsSystemPaneIcon() async throws {

@@ -563,7 +563,8 @@ Disk Access.
 
 ## 2026-10-08 — Well-known places, and contract v4 (folder and file results)
 
-Status: implemented on the Rust and Swift sides (2026-10-08).
+Status: contract implemented on Rust and Swift sides (2026-10-08); file results
+began flowing through search on 2026-10-09.
 
 Decision:
 
@@ -581,8 +582,8 @@ Decision:
 - IDs are `folder:<path>`, the same ID a walked folder will get in step 3, so
   a place and the walked folder are one destination with one usage history.
 - Contract v4 (ABI 4): result `kind` gains `folder` and `file`; `action` gains
-  `{"type":"open","path":...}`. `file` and file-path IDs are defined now but
-  only produced from step 3, so Swift adapts once. Selection events accept
+  `{"type":"open","path":...}`. File results and `file:` IDs are emitted by
+  file search (step 3, completed 2026-10-09). Selection events accept
   `folder:/...` and `file:/...` IDs.
 - Subtitles: display paths, `~/Downloads` in the home folder and
   `iCloud Drive/...` inside iCloud Drive, as Finder names it.
@@ -598,8 +599,9 @@ an Automation permission prompt, which is not worth a title.
 
 Consequences:
 
-- Until the Swift adapter adopts v4, a rebuilt launcher refuses to start
-  searching (ABI mismatch). Do not rebuild the daily launcher until then.
+- Resolved 2026-10-08: the Swift adapter adopted v4 before rebuilding the
+  launcher. The Rust engine began producing file results on 2026-10-09; no ABI
+  bump was needed because v4 already defined file IDs, kinds, and open actions.
 - Pinned by real-query tests: `downloads`, `down`, `documents`, `trash`,
   `recycle bin`, `icloud`, `applications`, `utilities`, `music`.
 
@@ -648,9 +650,46 @@ Consequences:
 
 - `final report` is a `WordPrefix` (not `Prefix`) match for `final-report`,
   because folding drops the dash; `Final Report` is exact.
-- Files and folders join only once the query has 3 characters (spaces
-  aside; `search::MIN_FILE_QUERY_CHARS`). At 1-2 characters a file named
-  exactly the query outranked every app (`a` -> a file "A"; `go` -> `~/go`
-  above Google Chrome); in a sample of 3-character queries the app always
-  came first. Places still match from the first character. Cost: a folder
-  named exactly `ui` needs a third character to appear.
+- Under 3 query characters (spaces aside; `search::MIN_FILE_QUERY_CHARS`) a
+  file or folder must match exactly and then ranks as `WordPrefix`. At 1-2
+  characters an exact file outranked every app (`a` -> a file "A"; `go` ->
+  `~/go` above Google Chrome). A first version hid files entirely below 3
+  characters; that hid `~/UW` for `uw`, where no app competes, so it was
+  replaced the same day (see the next entry).
+
+---
+
+## 2026-10-09 — Queries split like names; naming a file is exact; the typed folder
+
+Status: implemented. From the user's first day of daily use.
+
+Decision:
+
+- `normalize_query` treats punctuation and symbols as spaces (dashes are
+  still folded away first, so `wi-fi` stays `wifi`). Queries and names go
+  through it alike: `google.pdf` -> `google pdf`, `desktop/customized` ->
+  `desktop customized`, `zoom.us` -> `zoom us`.
+- A file or folder is an exact match when the query is its whole name with
+  the extension, or a path ending in it, written as shown (`~/...`,
+  `iCloud Drive/...`) or in full (`/Users/...`), compared component by
+  component. The check allocates, so it runs only when the query ends with
+  the file's whole name, tested by string comparison first.
+- Short queries: see the amended consequence in the previous entry.
+- When the best file matched with a folder's help, the deepest folder above
+  it named by a query word the file's own name does not cover is added as
+  the last result (replacing the last if the list is full; never with a
+  limit below 2; never twice; only if that folder is indexed).
+
+Why:
+
+Pasted paths and the launcher's tab completion (which writes the result's
+title, `Parth Kotwal Google.pdf`) found nothing: names were split at
+punctuation, queries were not. The user wanted the folder a file was found
+through offered too, to explore it; the folder the user typed (not the
+file's parent) was chosen because it is the one they had in mind.
+
+Consequences:
+
+The first version of the path check ran on every matched file and made a
+one-letter query take 15 ms and the FFI concurrency test 168 s; gating it
+behind the whole-name comparison restored ~0.3 ms per query.

@@ -639,7 +639,7 @@ mod tests {
             "directly in the home folder"
         );
         assert_eq!(
-            crate::matching::match_key(&folder.names[0].key, "archive.v2"),
+            crate::matching::match_key(&folder.names[0].key, &crate::normalize_query("archive.v2")),
             Some(crate::matching::MatchKind::Exact)
         );
     }

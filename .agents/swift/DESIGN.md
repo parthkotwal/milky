@@ -1,7 +1,7 @@
 # Milky native design direction
 
-Status: implemented native panel with real Rust app and System Settings search
-and explicit fixture mode.
+Status: implemented native panel with real Rust app, settings, folder, and file
+search, plus explicit fixture mode.
 Adapted from the user's supplied frontend-design guidance for a native macOS
 launcher. These defaults can be refined through real visual and interaction QA.
 
@@ -160,3 +160,30 @@ with a brief fade. If the search lasts past the existing progress delay, gently
 dim the old rows while the search indicator is visible. Reduce Motion disables
 these transitions. A completed new query still resets selection to its first
 result; same-query refresh preserves a selected ID when it remains available.
+
+## Panel candidates — 2026-10-09
+
+Three fixture-only presentations are available for review at the same 640 × 554
+pt size. `balanced` retains the current 54 pt rows, inline Tab suggestion, and
+icon at the end of the query line. `compact` uses 44 pt rows, a shorter header
+and footer, and type labels to make a longer mixed list scannable. `guided`
+places the top suggestion on a separate line and uses 58 pt rows with type
+labels; it favors hierarchy over visible result count. All preserve the core's
+result order and existing keyboard behavior. This is an experiment, not a
+chosen product direction; normal Rust mode remains `balanced`.
+
+Use `scripts/run-fixtures.sh --design=balanced|compact|guided`, then type
+`mixed`, or render `scripts/snapshot.sh --query mixed --design DESIGN
+--appearance light|dark`. The `mixed` fixture intentionally combines an app,
+setting, folder, file, and duplicate app names in a fixed display order.
+
+## Chosen panel and file interactions — 2026-10-09
+
+The user chose `hybrid`: balanced 54 pt rows and inline suggestion with compact
+type labels. It is now the real-mode default. Keep the unified result order;
+type labels clarify mixed rows without grouping or changing ranking. The footer
+exposes Actions (Command-K) and, for a file, Inspect (Command-P). An action
+menu occupies the result area and uses Up/Down, Return, and Escape. Inspection
+occupies the same area with a Quick Look preview and Back control. Escape
+returns to the result list before dismissing the launcher. The query remains
+visible and editable; changing it closes either overlay immediately.

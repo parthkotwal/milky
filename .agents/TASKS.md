@@ -113,7 +113,7 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          digit, joined pieces kept: `v2`, `cse332`); 3c file/folder
          candidates [x] (`from_file`, `FileFacts`: folder words below iCloud
          Drive or home, extension, modified; walked places and apps not
-         repeated; not in the engine yet; build of ~23k takes ~140 ms,
+         repeated; wired into the engine by 3e; build of ~23k takes ~140 ms,
          folder words recomputed per file, cacheable per folder); 3b match
          rule [x] (user, option C: one step down when folders or the
          extension were needed; `Tier::PathSupported`); 3d top-k + cap + order
@@ -121,11 +121,16 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          cap 40% of the list, at least 1; newest first among equal files);
          3e engine wiring, tests, docs [x]. Measured here (4,948 files and
          folders after the user's exclusions): engine start 0.11-0.15 s,
-         queries 0.25-0.33 ms. Swift already on v4: 27 tests pass, so a
-         rebuilt launcher shows files.
-         Files and folders join from 3 query characters (spaces aside):
-         at 2, short folders (`go`, `ui`, `db`) matched exactly and outranked
-         apps (`go` above Google Chrome); at 3 the app led in every sample.
+         queries 0.25-0.33 ms. The Swift adapter passes real file results;
+         the launcher has been rebuilt against the new engine.
+         Refined 2026-10-09 after first daily use: queries split at
+         punctuation like names (`google.pdf`, `desktop/customized`); a
+         file's whole name with extension, or a path ending in it, is exact
+         (fixes the launcher's tab completion and pasted paths); under 3
+         characters a file must match exactly and ranks as `WordPrefix`
+         (`uw` -> ~/UW, `go` -> Chrome first); the folder the user typed to
+         reach a file is offered last (`wags arch` -> Archive.zip, then wags;
+         `search::with_typed_folder`, user).
          Folder words are recomputed per file at build (cacheable per folder).
          Original sketch: path-aware matching (`332 ex01` ->
          `school/cse332/ex01.pdf`), file ranking (match, usage, recency,
@@ -200,6 +205,9 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 - [ ] User settings for result mix: the file cap (now 40% of the list) and
       possibly the kind order (apps > places > settings > folders > files).
       Requested 2026-10-08; `search::file_cap` is the single place to change.
+- [ ] User settings for which folders are indexed: today the home folder and
+      iCloud Drive minus `exclusions.txt`, edited by hand (e.g. dropping
+      `aws-elastic-beanstalk-cli-setup`). Requested 2026-10-09.
 
 - [ ] Learned ranking.
 - [ ] Contextual personalization.

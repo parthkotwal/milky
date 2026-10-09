@@ -256,3 +256,36 @@ Consequences: The suggestion uses the existing ordered search response and
 native icon cache, so it requires no contract or Rust changes. The explicit
 `vsc` fixture supports offscreen visual QA; fixture icon availability follows
 the host's installed-app state.
+
+## 2026-10-09 — Use balanced density with result type labels
+
+Decision: The user chose a hybrid of the balanced panel's 54 pt spacing and
+inline suggestion with the compact panel's App, Setting, Folder, and File
+labels. It is the default in real and fixture modes. The earlier three
+candidate modes remain fixture-only for comparison.
+
+Why: The mixed fixture exposed that type labels clarify a single ranked list
+without giving up the calmer row spacing. Grouping by type would change the
+core's result order, so the labels provide context in place.
+
+Consequences: Swift does not regroup or rerank results. The footer and empty
+prompt now describe all local result kinds.
+
+## 2026-10-09 — Inspect files and expose native secondary actions
+
+Decision: Embed `QLPreviewView` for selected file URLs. Add an in-panel action
+menu opened with Command-K, navigated by Up/Down and Return, and closed with
+Escape. Command-P opens file inspection directly. The menu derives Open,
+Inspect File, Reveal in Finder, and Copy Path or Link from the existing typed
+result action and kind. Native AppKit APIs perform reveal and clipboard work.
+
+Why: The current v4 results already provide validated local URLs. Quick Look
+can preview supported file types without a new extraction/indexing contract,
+and an explicit menu keeps secondary actions discoverable without crowding
+every result row.
+
+Consequences: No Rust ABI, ranking, or discovery changes. Primary Open keeps
+the existing selection event. Reveal and Copy are not sent as `opened` usage
+events because that outcome currently means a successful primary launch/open;
+a future action-specific event requires core agreement. The inspector and menu
+close on a changed query or selection so stale URLs cannot be acted on.
