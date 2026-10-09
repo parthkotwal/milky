@@ -558,3 +558,47 @@ Consequences:
 Project source files are indexed (agreed). Exclusion rules match folders only,
 not file patterns. `~/.Trash` contents are not indexed: reading it needs Full
 Disk Access.
+
+---
+
+## 2026-10-08 — Well-known places, and contract v4 (folder and file results)
+
+Status: implemented on the Rust and Swift sides (2026-10-08).
+
+Decision:
+
+- `places.rs` lists 13 places Finder offers in its sidebar and Go menu: Home,
+  Desktop, Documents, Downloads, Movies, Music, Pictures, Public, Library,
+  Trash, iCloud Drive, Applications, Utilities. Only existing folders appear.
+  Names come from LaunchServices (`launch_services.rs`, now the one home of
+  the CoreFoundation calls). `~/Applications` and `/System/Applications` are
+  left out: Finder's Applications already merges them.
+- Aliases ("Home", "Bin", "Recycle Bin", "iCloud") are `Name`s with
+  `alias: true`: they match at full strength but the result keeps its real
+  title.
+- Places are `Kind::Place`, prior just below apps (`App > Place > Pane >
+  Section`): only `music` and `home` change, where the app wins.
+- IDs are `folder:<path>`, the same ID a walked folder will get in step 3, so
+  a place and the walked folder are one destination with one usage history.
+- Contract v4 (ABI 4): result `kind` gains `folder` and `file`; `action` gains
+  `{"type":"open","path":...}`. `file` and file-path IDs are defined now but
+  only produced from step 3, so Swift adapts once. Selection events accept
+  `folder:/...` and `file:/...` IDs.
+- Subtitles: display paths, `~/Downloads` in the home folder and
+  `iCloud Drive/...` inside iCloud Drive, as Finder names it.
+
+Why:
+
+Spotlight does not find basic folders like Downloads (user, 2026-10-08).
+Bringing the contract forward lets places reach the launcher now instead of
+after file search. Opening a place by path works for all of them, verified on
+screen: `~/.Trash` opens Finder's real Trash view; only the window title shows
+the path. Finder's AppleScript "open trash" would title it "Trash" but needs
+an Automation permission prompt, which is not worth a title.
+
+Consequences:
+
+- Until the Swift adapter adopts v4, a rebuilt launcher refuses to start
+  searching (ABI mismatch). Do not rebuild the daily launcher until then.
+- Pinned by real-query tests: `downloads`, `down`, `documents`, `trash`,
+  `recycle bin`, `icloud`, `applications`, `utilities`, `music`.

@@ -53,7 +53,7 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
     }
 
     static func validateVersion(_ actual: UInt32) throws {
-        guard actual == 3 else { throw BridgeError.version(actual) }
+        guard actual == 4 else { throw BridgeError.version(actual) }
     }
 
     static func decode(_ data: Data, expectedQuery: String) throws -> [AppResult] {
@@ -82,6 +82,12 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
                             throw BridgeError.invalidResponse
                         }
                         action = .openURL(url)
+                    case (.folder, .open(let path)), (.file, .open(let path)):
+                        guard path.hasPrefix("/"), !path.contains("\0"),
+                              result.id == "\(result.kind.rawValue):\(path)" else {
+                            throw BridgeError.invalidResponse
+                        }
+                        action = .open(URL(fileURLWithPath: path))
                     default: throw BridgeError.invalidResponse
                     }
                     return AppResult(id: result.id, kind: result.kind, title: result.title,
@@ -136,15 +142,17 @@ private struct Reply: Decodable {
 private enum WireAction: Decodable {
     case launch(String)
     case openURL(String)
+    case open(String)
 
     private enum CodingKeys: String, CodingKey { case type, path, url }
-    private enum ActionType: String, Decodable { case launch, openURL = "open_url" }
+    private enum ActionType: String, Decodable { case launch, openURL = "open_url", open }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         switch try values.decode(ActionType.self, forKey: .type) {
         case .launch: self = .launch(try values.decode(String.self, forKey: .path))
         case .openURL: self = .openURL(try values.decode(String.self, forKey: .url))
+        case .open: self = .open(try values.decode(String.self, forKey: .path))
         }
     }
 }

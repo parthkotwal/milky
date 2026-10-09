@@ -46,11 +46,12 @@ pub struct SearchResponse {
     pub results: Vec<ResultItem>,
 }
 
-/// One search result on the wire (contract v3, DECISIONS 2026-10-08).
+/// One search result on the wire (contract v4, DECISIONS 2026-10-08).
 #[derive(Debug, Serialize)]
 pub struct ResultItem {
-    /// Identity of the destination: `app:<path>`, `settings:<pane id>`, or
-    /// `settings:<pane id>#<anchor>`. Usage and selections attach to this.
+    /// Identity of the destination: `app:<path>`, `folder:<path>`,
+    /// `file:<path>`, `settings:<pane id>`, or `settings:<pane id>#<anchor>`.
+    /// Usage and selections attach to this.
     pub id: String,
     /// Nested inside `results`, so it does not collide with the response's
     /// own `kind` tag.
@@ -68,15 +69,21 @@ pub struct ResultItem {
 pub enum WireKind {
     App,
     Setting,
+    Folder,
+    /// Not produced yet; file search arrives in the same contract (v4).
+    File,
 }
 
 /// What picking a result does, tagged by `"type"`:
-/// `{"type":"launch","path":...}` or `{"type":"open_url","url":...}`.
+/// `{"type":"launch","path":...}`, `{"type":"open_url","url":...}`, or
+/// `{"type":"open","path":...}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireAction {
     Launch { path: String },
     OpenUrl { url: String },
+    /// Open a file or folder in its default app (Finder for folders).
+    Open { path: String },
 }
 
 /// Match kind as clients see it: a stable name, never a number.
@@ -157,10 +164,11 @@ impl SelectionEvent {
     }
 }
 
-/// `app:/<absolute path>` or `settings:<pane id>` with an optional `#<anchor>`.
+/// `app:`, `folder:`, or `file:` followed by an absolute path, or
+/// `settings:<pane id>` with an optional `#<anchor>`.
 fn is_result_id(id: &str) -> bool {
     match id.split_once(':') {
-        Some(("app", rest)) => rest.starts_with('/'),
+        Some(("app" | "folder" | "file", rest)) => rest.starts_with('/'),
         Some(("settings", rest)) => !rest.is_empty() && !rest.starts_with('#'),
         _ => false,
     }
@@ -188,6 +196,7 @@ impl From<Kind> for WireKind {
         match kind {
             Kind::App => WireKind::App,
             Kind::Setting => WireKind::Setting,
+            Kind::Place => WireKind::Folder,
         }
     }
 }
@@ -202,6 +211,7 @@ pub fn result_item(hit: &Hit) -> Option<ResultItem> {
     let action = match &candidate.action {
         Action::Launch(path) => WireAction::Launch { path: path.to_str()?.to_string() },
         Action::OpenUrl(url) => WireAction::OpenUrl { url: url.clone() },
+        Action::Open(path) => WireAction::Open { path: path.to_str()?.to_string() },
     };
     Some(ResultItem {
         id: candidate.id.clone(),
@@ -316,6 +326,28 @@ mod tests {
     }
 
     #[test]
+    fn a_place_hit_becomes_an_open_result() {
+        let place = crate::places::Place {
+            path: PathBuf::from("/Users/someone/Downloads"),
+            name: "Downloads".into(),
+            aliases: vec![],
+        };
+        let candidate = crate::candidate::from_place(&place, std::path::Path::new("/Users/someone")).unwrap();
+        let item = result_item(&hit_for(&candidate)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&item).unwrap(),
+            serde_json::json!({
+                "id": "folder:/Users/someone/Downloads",
+                "kind": "folder",
+                "title": "Downloads",
+                "subtitle": "~/Downloads",
+                "action": {"type": "open", "path": "/Users/someone/Downloads"},
+                "match_kind": "exact"
+            })
+        );
+    }
+
+    #[test]
     fn a_non_utf8_app_path_is_skipped_not_mangled() {
         // 0xFF can never appear in UTF-8.
         let path = PathBuf::from(OsStr::from_bytes(b"/Applications/\xff.app"));
@@ -368,6 +400,9 @@ mod tests {
         assert_eq!(event.validate(), Ok(()));
         let section = "settings:com.apple.wifi-settings-extension#Advanced";
         assert_eq!(selection(section, &[section]).validate(), Ok(()));
+        for id in ["folder:/Users/someone/Downloads", "file:/Users/someone/notes.txt"] {
+            assert_eq!(selection(id, &[id]).validate(), Ok(()), "{id}");
+        }
     }
 
     #[test]
@@ -386,7 +421,7 @@ mod tests {
 
     #[test]
     fn only_result_ids_are_accepted() {
-        for bad in ["/A.app", "app:A.app", "settings:", "settings:#Advanced", "files:/A", "A.app"] {
+        for bad in ["/A.app", "app:A.app", "settings:", "settings:#Advanced", "files:/A", "A.app", "folder:Downloads"] {
             assert!(selection(bad, &[bad]).validate().is_err(), "{bad} should be rejected");
         }
     }

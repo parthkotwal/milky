@@ -16,6 +16,7 @@ use crate::apps;
 use crate::normalize_query;
 use crate::candidate::{self, Candidate, Kind};
 use crate::search::{self, Hit};
+use crate::places;
 use crate::settings;
 
 /// A warm search engine.
@@ -57,6 +58,11 @@ impl Engine {
     /// How many apps are currently indexed.
     pub fn app_count(&self) -> usize {
         self.count(Kind::App)
+    }
+
+    /// How many well-known places are currently indexed.
+    pub fn place_count(&self) -> usize {
+        self.count(Kind::Place)
     }
 
     /// How many System Settings panes and sections are currently indexed.
@@ -151,10 +157,18 @@ impl Engine {
     }
 }
 
-/// Every destination search can return: installed apps, then System Settings
-/// panes and sections.
+/// Every destination search can return: installed apps, well-known places,
+/// then System Settings panes and sections. Without a home folder there are no
+/// places.
 fn discover_candidates() -> Vec<Candidate> {
-    candidate::build(&apps::discover_apps(), &settings::discover_settings())
+    let home = std::env::home_dir();
+    let places = home.as_deref().map(places::discover_places).unwrap_or_default();
+    candidate::build(
+        &apps::discover_apps(),
+        &places,
+        &settings::discover_settings(),
+        home.as_deref().unwrap_or(Path::new("/")),
+    )
 }
 
 #[cfg(test)]

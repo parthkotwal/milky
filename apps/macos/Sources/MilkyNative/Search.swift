@@ -1,10 +1,11 @@
 import Foundation
 
-public enum ResultKind: String, Decodable, Sendable { case app, setting }
+public enum ResultKind: String, Decodable, Sendable { case app, setting, folder, file }
 
 public enum ResultAction: Equatable, Sendable {
     case launch(URL)
     case openURL(URL)
+    case open(URL)
 }
 
 public struct AppResult: Identifiable, Equatable, Sendable {
@@ -28,8 +29,11 @@ public struct AppResult: Identifiable, Equatable, Sendable {
         return nil
     }
     public var accessibilityDestination: String {
-        if let launchURL { return launchURL.path }
-        return "Open in \(subtitle)"
+        switch action {
+        case .launch(let url): url.path
+        case .openURL: "Open in \(subtitle)"
+        case .open(let url): kind == .folder ? "Open in Finder" : url.path
+        }
     }
 }
 
@@ -75,12 +79,21 @@ public struct FixtureSearchProvider: SearchProvider {
         setting("settings:com.apple.wifi-settings-extension#Advanced", "Advanced", "Wi-Fi", "x-apple.systempreferences:com.apple.wifi-settings-extension?Advanced"),
         app("IDLE", "/Applications/Python 3.12/IDLE.app"),
         app("IDLE", "/Applications/Python 3.13/IDLE.app"),
+        folder("Downloads", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")),
+        folder("Utilities", URL(fileURLWithPath: "/Applications/Utilities", isDirectory: true)),
+        folder("Trash", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")),
         app("Milky Research — A Very Long Application Name for Layout Inspection", "/tmp/Milky Fixtures/Research/An intentionally long parent directory/Application Previews/Milky Research.app"),
         app("Unavailable Application", "/tmp/Milky Fixtures/Unavailable.app"),
     ]
 
     private static func app(_ name: String, _ path: String) -> AppResult {
         AppResult(id: "app:\(path)", title: name, subtitle: URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent, action: .launch(URL(fileURLWithPath: path)))
+    }
+
+    private static func folder(_ name: String, _ url: URL) -> AppResult {
+        AppResult(id: "folder:\(url.path)", kind: .folder, title: name,
+                  subtitle: url.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"),
+                  action: .open(url))
     }
 
     private static func setting(_ id: String, _ title: String, _ subtitle: String, _ url: String) -> AppResult {

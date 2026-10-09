@@ -1,5 +1,5 @@
 /*
- * milky.h — the C surface of Milky's Rust core. ABI version 3.
+ * milky.h — the C surface of Milky's Rust core. ABI version 4.
  *
  * Contract: .agents/DECISIONS.md, 2026-09-13. Hand-written to match
  * rust/crates/milky-ffi/src/lib.rs; change both together and bump the version.
@@ -15,9 +15,9 @@
 #include <stdint.h>
 
 /* Must equal milky_abi_version() in the linked library. Covers the JSON message
- * format as well as these signatures: 3 is contract v3 (result ids, kinds,
- * actions; DECISIONS 2026-10-08). */
-#define MILKY_ABI_VERSION 3
+ * format as well as these signatures: 4 is contract v4 (folder and file
+ * results, the open action; DECISIONS 2026-10-08). */
+#define MILKY_ABI_VERSION 4
 
 /* Opaque handle. */
 typedef struct MilkyEngine MilkyEngine;

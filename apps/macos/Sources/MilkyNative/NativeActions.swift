@@ -8,6 +8,8 @@ public final class NativeAppOpener: AppOpening {
         switch result.action {
         case .openURL(let url):
             guard NSWorkspace.shared.open(url) else { throw OpenError.openFailed }
+        case .open(let url):
+            guard NSWorkspace.shared.open(url) else { throw OpenError.destinationOpenFailed }
         case .launch(let url):
             if let running = NSWorkspace.shared.runningApplications.first(where: {
                 $0.bundleURL?.standardizedFileURL == url.standardizedFileURL
@@ -26,10 +28,12 @@ public final class NativeAppOpener: AppOpening {
     private enum OpenError: LocalizedError {
         case activationFailed
         case openFailed
+        case destinationOpenFailed
         var errorDescription: String? {
             switch self {
             case .activationFailed: "The application could not be activated. Try opening it from Finder."
             case .openFailed: "The destination could not be opened. Try opening it from System Settings."
+            case .destinationOpenFailed: "The item could not be opened. Check that it still exists and try again."
             }
         }
     }
@@ -45,6 +49,8 @@ actor IconCache {
         switch result.action {
         case .launch(let appURL):
             url = appURL
+        case .open(let pathURL):
+            url = pathURL
         case .openURL:
             url = await settingsBundleURL(for: result.id)
         }

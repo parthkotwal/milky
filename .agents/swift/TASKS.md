@@ -6,7 +6,8 @@ Invoke Milky, type a query, navigate real app and settings results, and execute
 the selected destination's primary action. This is the native foundation for
 the broader product. Real Rust search is connected. Explicit fixtures remain
 available for UI QA. Contract v3 supplies app and System Settings destinations;
-the native adapter executes each result's declared primary action.
+the v4 adapter also executes folder destinations' declared open action and
+accepts future file results. Rust file search is not producing file results yet.
 
 ## Now
 
@@ -22,6 +23,8 @@ the native adapter executes each result's declared primary action.
 - [x] Build Rust before Swift and invalidate stale static linkage in the dev scripts.
 - [x] Add a Spotlight-inspired top-result chip: preserve typed text, complete
       the query with Tab, and show the result's icon at the trailing edge.
+- [x] Adopt ABI 4 folder/file result kinds and the typed `open` path action;
+      open destinations natively and use their Finder icons.
 
 Status: native app-search foundation complete. The remaining checks below are
 quality follow-ups; they do not block the next product capability.
@@ -172,6 +175,17 @@ to the implemented invocation behavior.
 - State tests verify a pending/stale suggestion cannot be accepted, Tab
   completion replaces the query without opening, and an exact title match
   hides the chip. The complete Swift suite passes 24 tests.
+
+## QA evidence — 2026-10-08 — Contract v4 places
+
+- `apps/macos/scripts/build.sh test` validates ABI 4 and passes 27 tests.
+  Real Rust searches return Downloads, Applications, and Utilities as folder
+  IDs with open-path actions; decoder tests also cover future file results and
+  reject mismatched kinds, IDs, and relative paths.
+- A dark offscreen `downloads` snapshot shows the system's native Downloads
+  folder icon and `~/Downloads` subtitle without changing the foreground app.
+- The app and settings paths still pass the same bridge suite. Opening a place
+  in Finder through the live launcher remains a focused manual check.
 
 ## QA evidence — 2026-09-13
 

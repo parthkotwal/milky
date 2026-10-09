@@ -118,6 +118,35 @@ a kind, an action, and a destination ID (contract v3)". Swift-side summary:
   about 90 ms, so keep creating it off the main thread.
 
 
+### Contract v4 — agreed 2026-10-08, Rust side wired
+
+Authoritative text: shared [`../DECISIONS.md`](../DECISIONS.md), "Well-known
+places, and contract v4". Swift-side summary:
+
+- `milky_abi_version()` and `MILKY_ABI_VERSION` are now 4. Everything in v3 is
+  unchanged; v4 only adds values.
+- Result `kind` can also be `folder` (now: places such as Downloads, Trash,
+  Applications) or `file` (not produced yet; file search, same contract).
+- `action` can also be `{"type":"open","path":"/Users/x/Downloads"}`: open
+  with `NSWorkspace.open(URL(fileURLWithPath:))`. Folders open in Finder; this
+  is also how the Trash opens (verified: Finder shows its real Trash view).
+- IDs: `folder:<absolute path>` and `file:<absolute path>`; the path must
+  equal the `open` action's path, as `app:` IDs equal their launch path.
+  `record_selection` accepts them.
+- Example: `{"id":"folder:/Users/x/.Trash","kind":"folder","title":"Trash",
+  "subtitle":"~/.Trash","action":{"type":"open","path":"/Users/x/.Trash"},
+  "match_kind":"exact"}`.
+- Presentation: the native file/folder icon for the path
+  (`NSWorkspace.icon(forFile:)`), subtitle under the title as for apps.
+- **Swift side wired 2026-10-08.** `ResultKind` accepts `folder` and `file`;
+  the decoder accepts `open` only with an absolute path whose value matches the
+  corresponding `folder:` or `file:` ID. `NativeAppOpener` uses
+  `NSWorkspace.open(URL(fileURLWithPath:))`, icon lookup uses the same path,
+  and selection recording continues to send the stable destination IDs.
+  Real-engine tests cover Downloads, Applications, and Utilities; fixture
+  snapshots cover the native folder icon. `file` is decoded and validated but
+  no Rust file result is produced yet.
+
 ### Selection events — agreed and wired 2026-10-08
 
 Authoritative text: shared [`../DECISIONS.md`](../DECISIONS.md), "Selection

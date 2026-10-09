@@ -48,7 +48,7 @@ pub fn tier(kind: Option<MatchKind>, keyword: Option<KeywordMatch>) -> Option<Ti
 pub struct Hit<'a> {
     pub candidate: &'a Candidate,
     /// The name that matched best — shown as the result's title. The default
-    /// title when only keywords matched.
+    /// title when only keywords or an alias matched.
     pub title: &'a str,
     /// How the title matched, if it did.
     pub kind: Option<MatchKind>,
@@ -62,8 +62,8 @@ pub struct Hit<'a> {
 /// candidate, titled by its best-matching name (the earlier name wins a tie).
 /// Sorted by tier, then usage, then prior (apps, panes, sections), then keyword
 /// match, then title length, then title, then ID, so the order is fully
-/// deterministic. Only apps match as subsequences: on sentence-long setting
-/// titles nearly every short query is one.
+/// deterministic. Only apps and places match as subsequences: their names are
+/// short, while on sentence-long setting titles nearly every short query is one.
 ///
 /// `query` must already be normalized by [`crate::normalize_query`].
 pub fn search<'a>(
@@ -79,13 +79,18 @@ pub fn search<'a>(
                 .names
                 .iter()
                 .filter_map(|name| Some((match_key(&name.key, query)?, name)))
-                .filter(|(kind, _)| *kind != MatchKind::Subsequence || candidate.kind == Kind::App)
+                .filter(|(kind, _)| {
+                    *kind != MatchKind::Subsequence || matches!(candidate.kind, Kind::App | Kind::Place)
+                })
                 .min_by_key(|(kind, _)| Reverse(*kind));
             let keyword = keyword_match(&candidate.keywords, query);
             let tier = tier(best.map(|(kind, _)| kind), keyword)?;
             Some(Hit {
                 candidate,
-                title: best.map_or(candidate.title(), |(_, name)| &name.text),
+                title: match best {
+                    Some((_, name)) if !name.alias => &name.text,
+                    _ => candidate.title(),
+                },
                 kind: best.map(|(kind, _)| kind),
                 keyword,
                 tier,
@@ -335,6 +340,16 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_matches_but_the_real_name_is_shown() {
+        let mut trash = candidate("folder:/Users/someone/.Trash", Kind::Place, &["Trash"]);
+        trash.names.push(Name::alias("Recycle Bin"));
+        let candidates = [trash];
+        let hits = search(&candidates, "recycle", 10, |_| 0.0);
+        assert_eq!(hits[0].title, "Trash");
+        assert_eq!(hits[0].kind, Some(MatchKind::Prefix), "the alias's match strength still counts");
+    }
+
+    #[test]
     fn keywords_find_what_titles_miss() {
         let candidates = [with_keywords(
             candidate("settings:appearance", Kind::Setting, &["Appearance"]),
@@ -394,12 +409,22 @@ mod tests {
         assert!(search(&candidates, "sleep", 10, |_| 0.0).is_empty(), "s-l-e-e-p is scattered through the title");
     }
 
-    /// Real queries against this Mac's apps and settings: the expected
+    fn real_candidates() -> Vec<Candidate> {
+        let home = std::env::home_dir().unwrap();
+        crate::candidate::build(
+            &crate::apps::discover_apps(),
+            &crate::places::discover_places(&home),
+            &crate::settings::discover_settings(),
+            &home,
+        )
+    }
+
+    /// Real queries against this Mac's apps, places, and settings: the expected
     /// destination (an ID suffix) must rank within the first `within` results.
     /// A regression check for ranking changes, not a benchmark.
     #[test]
     fn real_queries_find_the_expected_destination() {
-        let candidates = crate::candidate::build(&crate::apps::discover_apps(), &crate::settings::discover_settings());
+        let candidates = real_candidates();
         let cases: &[(&str, &str, usize)] = &[
             ("camera", "#Privacy_Camera", 1),
             ("mac address", "wifi-settings-extension#Advanced", 2),
@@ -420,6 +445,16 @@ mod tests {
             ("activity", "Activity Monitor.app", 1),
             ("safari", "Safari.app", 1),
             ("term", "Terminal.app", 1),
+            ("downloads", "/Downloads", 1),
+            ("down", "/Downloads", 1),
+            ("documents", "/Documents", 1),
+            ("trash", "/.Trash", 1),
+            ("recycle bin", "/.Trash", 1),
+            ("icloud", "/com~apple~CloudDocs", 1),
+            ("applications", "folder:/Applications", 1),
+            ("utilities", "folder:/Applications/Utilities", 1),
+            ("music", "Music.app", 1),
+            ("music", "/Music", 2),
         ];
         let mut failures = Vec::new();
         for &(query, expected, within) in cases {
@@ -434,7 +469,7 @@ mod tests {
 
     #[test]
     fn real_settings_are_findable_by_title() {
-        let candidates = crate::candidate::build(&crate::apps::discover_apps(), &crate::settings::discover_settings());
+        let candidates = real_candidates();
         for (query, expected) in [
             ("night shift", "settings:com.apple.Displays-Settings.extension#nightShiftSection"),
             ("bluetooth", "settings:com.apple.BluetoothSettings"),

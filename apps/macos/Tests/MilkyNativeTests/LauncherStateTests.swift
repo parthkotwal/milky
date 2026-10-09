@@ -186,6 +186,18 @@ private actor SelectionRecorder: SelectionEventRecording {
         let missingApp = AppResult(id: "app:\(missingURL.path)", title: "Missing", action: .launch(missingURL))
         let missing = await IconCache.shared.data(for: missingApp)
         XCTAssertNil(missing)
+
+        let folderURL = URL(fileURLWithPath: "/Applications/Utilities", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: folderURL.path) else {
+            throw XCTSkip("Applications/Utilities is unavailable on this host")
+        }
+        let folder = AppResult(id: "folder:\(folderURL.path)", kind: .folder,
+                               title: "Utilities", subtitle: "/Applications/Utilities", action: .open(folderURL))
+        let folderDataValue = await IconCache.shared.data(for: folder)
+        let folderData = try XCTUnwrap(folderDataValue)
+        let folderImage = try XCTUnwrap(NSBitmapImageRep(data: folderData))
+        XCTAssertEqual(folderImage.pixelsWide, 64)
+        XCTAssertEqual(folderImage.pixelsHigh, 64)
     }
 
     func testSettingsResultUsesItsSystemPaneIcon() async throws {

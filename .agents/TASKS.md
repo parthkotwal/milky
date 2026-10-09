@@ -31,7 +31,9 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       (DECISIONS 2026-10-08). 103 Rust tests.
 - [x] Swift sends `record_selection` after real open attempts (Swift owner,
       2026-10-08; verified in native tests and real bridge contract tests).
-- [ ] Swift adapter on contract v3: decode `id`/`kind`/`title`/`subtitle`/`action`,
+- [x] Swift adapter on contract v4 (wired 2026-10-08): `folder`/`file` kinds,
+      the `open` action, `folder:`/`file:` IDs; see `swift/INTEGRATION.md`.
+- [x] Swift adapter on contract v3 (wired 2026-10-08): decode `id`/`kind`/`title`/`subtitle`/`action`,
       open URLs, send result IDs (Swift owner). See `.agents/swift/INTEGRATION.md`.
 - [x] Rank with usage: break ties within a match kind by decayed launch score
       (DECISIONS 2026-10-08). 107 Rust tests.
@@ -93,17 +95,24 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          source files are indexed. Measured on this Mac: 22,875 entries
          (3,174 folders), 0.30 s first walk, 0.05 s warm; without the defaults,
          Go's module cache alone added ~36,800.
-      2. [ ] Well-known places as results: Home, Desktop, Documents,
+      2. [x] Well-known places as results: Home, Desktop, Documents,
          Downloads, Applications (`/Applications`, system), Utilities, Movies,
          Music, Pictures, Public, iCloud Drive, Library, Trash. Names from
          macOS (localized). Rank high: `downloads` -> Downloads first.
+         Rust side done 2026-10-08 (`places.rs`, contract v4, ABI 4): 13
+         places, aliases (Home, Bin, Recycle Bin, iCloud) match but are never
+         shown. Verified on screen: opening `~/.Trash` by path shows Finder's
+         Trash (with Empty); `/Applications/Utilities` shows the merged system
+         utilities. Swift adapter v4 is wired (see `swift/INTEGRATION.md`).
       3. [ ] Files in search: path-aware matching (`332 ex01` ->
          `school/cse332/ex01.pdf`), file ranking (match, usage, recency,
          location, folder vs file) tuned on a query set; top-k selection.
       4. [ ] Background indexing: startup unchanged, files arrive after.
-      5. [ ] Launcher: contract v4 (file/folder/place kinds, open and reveal
-         actions), folder-permission prompts. Rebuild the launcher here.
-      6. [ ] Freshness via FSEvents.
+      5. [x] Launcher: contract v4 folder/place kinds and `open` action, native
+         Finder icons and ID-based selection events (Swift owner, 2026-10-08).
+      6. [ ] Add reveal actions and folder-permission prompts when core support
+         lands.
+      7. [ ] Freshness via FSEvents.
       Later, opt-in: items inside the Trash. `~/.Trash` is unreadable without
       Full Disk Access ("Operation not permitted", even from Terminal), so it
       waits until Milky has another reason to ask for that permission. Shown as

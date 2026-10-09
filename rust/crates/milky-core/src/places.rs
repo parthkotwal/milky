@@ -50,7 +50,7 @@ pub const PLACES: &[PlaceSpec] = &[
     PlaceSpec { location: Location::InHome("Library"), aliases: &[] },
     PlaceSpec { location: Location::InHome(".Trash"), aliases: &["Bin", "Recycle Bin"] },
     PlaceSpec {
-        location: Location::InHome("Library/Mobile Documents/com~apple~CloudDocs"),
+        location: Location::InHome(crate::candidate::ICLOUD_DRIVE),
         aliases: &["iCloud"],
     },
     PlaceSpec { location: Location::Absolute("/Applications"), aliases: &[] },

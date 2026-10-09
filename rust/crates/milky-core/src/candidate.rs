@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::apps::App;
 use crate::matching::{NameKey, words_of};
+use crate::places::Place;
 use crate::settings::SettingsPane;
 
 /// What happens when the user picks a result.
@@ -18,6 +19,8 @@ pub enum Action {
     Launch(PathBuf),
     /// Open a URL, such as a System Settings deep link.
     OpenUrl(String),
+    /// Open a file or folder in its default app; folders open in Finder.
+    Open(PathBuf),
 }
 
 /// Which kind of thing a result is.
@@ -25,6 +28,8 @@ pub enum Action {
 pub enum Kind {
     App,
     Setting,
+    /// A well-known folder: Downloads, Applications, Trash.
+    Place,
 }
 
 /// What kind of destination a candidate is, ordered by how likely it is to be
@@ -34,6 +39,9 @@ pub enum Kind {
 pub enum Prior {
     Section,
     Pane,
+    /// Just below apps: only an app and a place sharing a name and usage
+    /// differ, and then the app wins (`music`).
+    Place,
     App,
 }
 
@@ -42,11 +50,19 @@ pub enum Prior {
 pub struct Name {
     pub text: String,
     pub(crate) key: NameKey,
+    /// Matches like any name but is never shown: the Trash answers to "Bin",
+    /// yet a result titled "Bin" would name a folder that does not exist.
+    pub alias: bool,
 }
 
 impl Name {
     pub fn new(text: &str) -> Self {
-        Self { text: text.to_string(), key: NameKey::new(text) }
+        Self { text: text.to_string(), key: NameKey::new(text), alias: false }
+    }
+
+    /// A name to match on but never display.
+    pub fn alias(text: &str) -> Self {
+        Self { alias: true, ..Self::new(text) }
     }
 }
 
@@ -75,10 +91,12 @@ impl Candidate {
         self.names.first().map_or("", |name| name.text.as_str())
     }
 
-    /// Apps, then panes, then sections. A section's ID has an anchor.
+    /// Apps, then places, then panes, then sections. A section's ID has an
+    /// anchor.
     pub fn prior(&self) -> Prior {
         match self.kind {
             Kind::App => Prior::App,
+            Kind::Place => Prior::Place,
             Kind::Setting if self.id.contains('#') => Prior::Section,
             Kind::Setting => Prior::Pane,
         }
@@ -89,6 +107,52 @@ impl Candidate {
 /// broken identity.
 pub fn app_id(path: &Path) -> Option<String> {
     Some(format!("app:{}", path.to_str()?))
+}
+
+/// `folder:<path>`, or `None` if the path is not UTF-8. The same ID a file
+/// walk will give the same folder, so a place and a walked folder are one
+/// destination with one usage history.
+pub fn folder_id(path: &Path) -> Option<String> {
+    Some(format!("folder:{}", path.to_str()?))
+}
+
+/// Where iCloud Drive keeps its files, relative to the home folder.
+pub const ICLOUD_DRIVE: &str = "Library/Mobile Documents/com~apple~CloudDocs";
+
+/// `path` as people read it: inside iCloud Drive as `iCloud Drive/Notes`, as
+/// Finder names it; inside the home folder as `~/Downloads` (`~` for the home
+/// folder itself); anywhere else, the full path.
+pub fn display_path(path: &Path, home: &Path) -> String {
+    let under = |root: &Path, label: &str| {
+        let relative = path.strip_prefix(root).ok()?;
+        Some(if relative.as_os_str().is_empty() {
+            label.to_string()
+        } else {
+            format!("{label}/{}", relative.display())
+        })
+    };
+    under(&home.join(ICLOUD_DRIVE), "iCloud Drive")
+        .or_else(|| under(home, "~"))
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// A place as a candidate: named as Finder names it, also answering to its
+/// aliases, subtitled by where it is, opened in Finder.
+pub fn from_place(place: &Place, home: &Path) -> Option<Candidate> {
+    let mut names = vec![Name::new(&place.name)];
+    for alias in &place.aliases {
+        if !names.iter().any(|name| name.text.eq_ignore_ascii_case(alias)) {
+            names.push(Name::alias(alias));
+        }
+    }
+    Some(Candidate {
+        id: folder_id(&place.path)?,
+        kind: Kind::Place,
+        subtitle: display_path(&place.path, home),
+        action: Action::Open(place.path.clone()),
+        names,
+        keywords: Vec::new(),
+    })
 }
 
 /// An app as a candidate: identified by path, subtitled by its folder
@@ -105,7 +169,7 @@ pub fn from_app(app: &App) -> Option<Candidate> {
         kind: Kind::App,
         subtitle,
         action: Action::Launch(app.path.clone()),
-        names: vec![Name { text: app.name.clone(), key: app.key.clone() }],
+        names: vec![Name { text: app.name.clone(), key: app.key.clone(), alias: false }],
         keywords: Vec::new(),
     })
 }
@@ -154,10 +218,11 @@ pub fn from_settings(pane: &SettingsPane) -> Vec<Candidate> {
     candidates
 }
 
-/// Every candidate: apps first, then settings.
-pub fn build(apps: &[App], panes: &[SettingsPane]) -> Vec<Candidate> {
+/// Every candidate: apps, then places, then settings.
+pub fn build(apps: &[App], places: &[Place], panes: &[SettingsPane], home: &Path) -> Vec<Candidate> {
     apps.iter()
         .filter_map(from_app)
+        .chain(places.iter().filter_map(|place| from_place(place, home)))
         .chain(panes.iter().flat_map(from_settings))
         .collect()
 }
@@ -285,7 +350,7 @@ mod tests {
 
     #[test]
     fn apps_come_before_panes_before_sections() {
-        let candidates = build(&[idle("3.12")], &[wifi()]);
+        let candidates = build(&[idle("3.12")], &[], &[wifi()], Path::new("/Users/someone"));
         assert_eq!(candidates[0].prior(), Prior::App);
         assert_eq!(candidates[1].prior(), Prior::Pane);
         assert_eq!(candidates[2].prior(), Prior::Section);
@@ -293,9 +358,48 @@ mod tests {
         assert!(candidates[0].keywords.is_empty());
     }
 
+    fn trash() -> Place {
+        Place {
+            path: PathBuf::from("/Users/someone/.Trash"),
+            name: "Trash".to_string(),
+            aliases: vec!["Bin".to_string(), "Recycle Bin".to_string(), "trash".to_string()],
+        }
+    }
+
+    #[test]
+    fn a_place_is_a_folder_opened_in_finder() {
+        let home = Path::new("/Users/someone");
+        let candidate = from_place(&trash(), home).unwrap();
+        assert_eq!(candidate.id, "folder:/Users/someone/.Trash");
+        assert_eq!(candidate.kind, Kind::Place);
+        assert_eq!(candidate.prior(), Prior::Place);
+        assert_eq!(candidate.subtitle, "~/.Trash");
+        assert_eq!(candidate.action, Action::Open(PathBuf::from("/Users/someone/.Trash")));
+        assert_eq!(titles(&candidate), vec!["Trash", "Bin", "Recycle Bin"], "an alias repeating the name is dropped");
+        assert!(!candidate.names[0].alias);
+        assert!(candidate.names[1..].iter().all(|name| name.alias));
+    }
+
+    #[test]
+    fn paths_display_relative_to_home() {
+        let home = Path::new("/Users/someone");
+        assert_eq!(display_path(home, home), "~");
+        assert_eq!(display_path(&home.join("Downloads"), home), "~/Downloads");
+        assert_eq!(display_path(Path::new("/Applications"), home), "/Applications");
+        assert_eq!(display_path(Path::new("/Users/someoneelse"), home), "/Users/someoneelse");
+        let icloud = home.join(ICLOUD_DRIVE);
+        assert_eq!(display_path(&icloud, home), "iCloud Drive");
+        assert_eq!(display_path(&icloud.join("Notes/a.txt"), home), "iCloud Drive/Notes/a.txt");
+    }
+
+    #[test]
+    fn places_rank_between_apps_and_panes() {
+        assert!(Prior::App > Prior::Place && Prior::Place > Prior::Pane);
+    }
+
     #[test]
     fn build_lists_apps_then_settings() {
-        let candidates = build(&[idle("3.12")], &[wifi()]);
+        let candidates = build(&[idle("3.12")], &[], &[wifi()], Path::new("/Users/someone"));
         assert_eq!(candidates.len(), 4);
         assert_eq!(candidates[0].kind, Kind::App);
         assert!(candidates[1..].iter().all(|c| c.kind == Kind::Setting));
@@ -303,10 +407,17 @@ mod tests {
 
     #[test]
     fn every_real_destination_has_a_unique_id() {
-        let candidates = build(&crate::apps::discover_apps(), &crate::settings::discover_settings());
+        let home = std::env::home_dir().unwrap();
+        let candidates = build(
+            &crate::apps::discover_apps(),
+            &crate::places::discover_places(&home),
+            &crate::settings::discover_settings(),
+            &home,
+        );
         let ids: HashSet<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids.len(), candidates.len(), "duplicate ids");
         assert!(ids.contains("settings:com.apple.Displays-Settings.extension#nightShiftSection"));
+        assert!(ids.contains("folder:/Applications"));
         assert!(candidates.iter().all(|c| !c.names.is_empty()));
     }
 }

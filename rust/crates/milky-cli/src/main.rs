@@ -72,8 +72,9 @@ fn main() -> ExitCode {
     let engine = Engine::new();
     let scan = started.elapsed();
     eprintln!(
-        "indexed {} apps and {} settings in {:.1?}",
+        "indexed {} apps, {} places, and {} settings in {:.1?}",
         engine.app_count(),
+        engine.place_count(),
         engine.settings_count(),
         scan
     );

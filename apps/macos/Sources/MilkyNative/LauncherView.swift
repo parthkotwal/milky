@@ -158,7 +158,7 @@ public struct LauncherView: View {
                     if let id { proxy.scrollTo(id, anchor: .center) }
                     if let selected = state.selected,
                        let index = state.results.firstIndex(where: { $0.id == selected.id }) {
-                        let destination = selected.kind == .app ? selected.accessibilityDestination : selected.kind.rawValue
+                        let destination = selected.accessibilityDestination
                         announce("\(selected.title), \(selected.subtitle), \(destination), result \(index + 1) of \(state.results.count)")
                     }
                 }
@@ -241,7 +241,15 @@ private struct ResultIcon: View {
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable() }
-            else { Image(systemName: result.kind == .setting ? "slider.horizontal.3" : "app.dashed").resizable().padding(5).foregroundStyle(LauncherTheme.secondary) }
+            else {
+                let symbol: String = switch result.kind {
+                case .app: "app.dashed"
+                case .setting: "slider.horizontal.3"
+                case .folder: "folder.fill"
+                case .file: "doc.fill"
+                }
+                Image(systemName: symbol).resizable().padding(5).foregroundStyle(LauncherTheme.secondary)
+            }
         }
         .frame(width: 32, height: 32).accessibilityHidden(true)
         .task(id: result.id) {

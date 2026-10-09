@@ -16,10 +16,11 @@ pub struct MilkyEngine {
     engine: Engine,
 }
 
-/// Version of the C ABI. Bump on any signature or ownership change.
+/// Version of the C ABI. Bump on any signature, ownership, or message-format
+/// change. 4 is contract v4: folder and file results, the `open` action.
 #[unsafe(no_mangle)]
 pub extern "C" fn milky_abi_version() -> u32 {
-    3
+    4
 }
 
 /// Create an engine, scanning for apps once. Returns null on failure.
@@ -118,8 +119,8 @@ mod tests {
     }
 
     #[test]
-    fn abi_version_is_three() {
-        assert_eq!(milky_abi_version(), 3);
+    fn abi_version_is_four() {
+        assert_eq!(milky_abi_version(), 4);
     }
 
     #[test]

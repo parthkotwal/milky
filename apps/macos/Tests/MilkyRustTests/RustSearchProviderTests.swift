@@ -3,7 +3,8 @@ import XCTest
 
 @MainActor final class RustSearchProviderTests: XCTestCase {
     func testRejectsUnsupportedABIBeforeEngineCreation() throws {
-        XCTAssertNoThrow(try RustSearchProvider.validateVersion(3))
+        XCTAssertNoThrow(try RustSearchProvider.validateVersion(4))
+        XCTAssertThrowsError(try RustSearchProvider.validateVersion(3))
         XCTAssertThrowsError(try RustSearchProvider.validateVersion(1))
         XCTAssertThrowsError(try RustSearchProvider.validateVersion(2))
     }
@@ -69,6 +70,36 @@ import XCTest
         await provider.shutdown()
     }
 
+    func testRealEngineReturnsWellKnownPlacesAsOpenableFolders() async throws {
+        let provider = RustSearchProvider(limit: 20)
+        let results = try await provider.search(query: "downloads")
+        let downloads = try XCTUnwrap(results.first { $0.id == "folder:\(FileManager.default.homeDirectoryForCurrentUser.path)/Downloads" })
+        XCTAssertEqual(results.first?.id, downloads.id, "The named place should rank first for its title")
+        XCTAssertEqual(downloads.kind, .folder)
+        XCTAssertEqual(downloads.title, "Downloads")
+        guard case .open(let url) = downloads.action else {
+            await provider.shutdown()
+            return XCTFail("Places must decode as open path actions")
+        }
+        XCTAssertEqual(url.path, downloads.id.replacingOccurrences(of: "folder:", with: ""))
+
+        let alias = try await provider.search(query: "recycle bin")
+        XCTAssertEqual(alias.first?.id, "folder:\(FileManager.default.homeDirectoryForCurrentUser.path)/.Trash")
+        XCTAssertEqual(alias.first?.title, "Trash", "Aliases find the destination without renaming it")
+        await provider.shutdown()
+    }
+
+    func testDecodeFolderAndFutureFileKindsWithMatchingOpenPaths() throws {
+        let data = Data(#"{"kind":"search","query":"notes","results":[{"id":"folder:/Users/a/Downloads","kind":"folder","title":"Downloads","subtitle":"~/Downloads","action":{"type":"open","path":"/Users/a/Downloads"}},{"id":"file:/Users/a/notes.txt","kind":"file","title":"notes.txt","subtitle":"~/notes.txt","action":{"type":"open","path":"/Users/a/notes.txt"}}]}"#.utf8)
+        let values = try RustSearchProvider.decode(data, expectedQuery: "notes")
+        XCTAssertEqual(values.map(\.kind), [.folder, .file])
+        XCTAssertEqual(values.map(\.action), [
+            .open(URL(fileURLWithPath: "/Users/a/Downloads")),
+            .open(URL(fileURLWithPath: "/Users/a/notes.txt")),
+        ])
+        XCTAssertEqual(values.map(\.accessibilityDestination), ["Open in Finder", "/Users/a/notes.txt"])
+    }
+
     func testErrorAndMalformedPayloadsNeverBecomeEmptyResults() throws {
         let error = Data(#"{"kind":"error","reason":"panic","message":"Engine failed"}"#.utf8)
         XCTAssertThrowsError(try RustSearchProvider.decode(error, expectedQuery: "a")) { error in
@@ -80,11 +111,23 @@ import XCTest
             #"{"kind":"search","query":"old","results":[]}"#,
             #"{"kind":"search","query":"a","results":[{"id":"app:relative.app","kind":"app","title":"App","subtitle":"","action":{"type":"launch","path":"relative.app"}}]}"#,
             #"{"kind":"search","query":"a","results":[{"id":"app:/a","kind":"app","title":"A","subtitle":"","action":{"type":"launch","path":"/a"}},{"id":"app:/a","kind":"app","title":"A","subtitle":"","action":{"type":"launch","path":"/a"}}]}"#,
+            #"{"kind":"search","query":"a","results":[{"id":"folder:/else","kind":"folder","title":"Downloads","subtitle":"~/Downloads","action":{"type":"open","path":"/Users/a/Downloads"}}]}"#,
+            #"{"kind":"search","query":"a","results":[{"id":"file:relative","kind":"file","title":"notes.txt","subtitle":"notes.txt","action":{"type":"open","path":"relative"}}]}"#,
+            #"{"kind":"search","query":"a","results":[{"id":"setting:bad","kind":"setting","title":"Bad","subtitle":"","action":{"type":"open","path":"/tmp"}}]}"#,
             #"{"kind":"unknown"}"#,
             #"{"kind":"error"}"#,
         ] {
             XCTAssertThrowsError(try RustSearchProvider.decode(Data(text.utf8), expectedQuery: "a"))
         }
+    }
+
+    func testRealEngineReturnsApplicationsAndUtilitiesPlaces() async throws {
+        let provider = RustSearchProvider(limit: 20)
+        let utilities = try await provider.search(query: "utilities")
+        XCTAssertTrue(utilities.contains { $0.id == "folder:/Applications/Utilities" && $0.kind == .folder })
+        let applications = try await provider.search(query: "applications")
+        XCTAssertTrue(applications.contains { $0.id == "folder:/Applications" && $0.kind == .folder })
+        await provider.shutdown()
     }
 
     func testSelectionAcknowledgementAndErrorsAreValidated() throws {
