@@ -49,6 +49,13 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       linear scan over 128 bundles at ~30-90 us, which is fine at this size and
       will not be for files.
 - [ ] Rank with recorded usage so it can distinguish equally-good prefix matches.
+- [ ] Learn the ranking from selections. The hand-set order has hit its
+      limit (DECISIONS 2026-10-12): no single ladder ranks a file's exact name
+      above a long setting starting with the word, an app above a file named
+      after one of its words, and a pane above an app starting with its name.
+      `TAIL_STEPS` is the current compromise; usage cannot lift a section or
+      file over an app of equal strength. Replay `events.jsonl` offline once it
+      has enough selections.
 - [ ] Usage is three separate features, not one number. Keep them separate so
       each can be weighted and debugged independently:
       1. invocation frecency — decayed launch count, in `usage.rs`;
@@ -131,6 +138,9 @@ Keep entries concise. Remove or move completed items when they no longer help fu
          (`uw` -> ~/UW, `go` -> Chrome first); the folder the user typed to
          reach a file is offered last (`wags arch` -> Archive.zip, then wags;
          `search::with_typed_folder`, user).
+         2026-10-12: `.localized` folders go by their Finder name ("Chrome
+         Apps"); settings sections and files rank two steps below apps,
+         places, and panes (`search::standing`): `chrome` -> Google Chrome.
          Folder words are recomputed per file at build (cacheable per folder).
          Original sketch: path-aware matching (`332 ex01` ->
          `school/cse332/ex01.pdf`), file ranking (match, usage, recency,

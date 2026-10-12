@@ -693,3 +693,37 @@ Consequences:
 The first version of the path check ran on every matched file and made a
 one-letter query take 15 ms and the FFI concurrency test 168 s; gating it
 behind the whole-name comparison restored ~0.3 ms per query.
+
+---
+
+## 2026-10-12 — Head and tail: settings sections and files rank two steps lower
+
+Status: implemented.
+
+Decision:
+
+- Hits are ordered by a "standing": the tier, lowered two steps
+  (`search::TAIL_STEPS`) for the long tail, settings sections and walked
+  files and folders, against the head: apps, places, and settings panes.
+  Then usage, prior, and the rest as before. Within the head or the tail the
+  order is unchanged.
+- `.localized` folders are named, matched, and shown in paths by their Finder
+  name (LaunchServices; fallback: drop the suffix): "Chrome Apps".
+
+Why:
+
+`chrome` put the folder "Chrome Apps.localized" (a prefix match) above Google
+Chrome ("chrome" only starts its second word). Measured by typing a later
+word of each app's name (67 queries): the app came first 14 times and a file
+beat it 23 times (`word` -> Word.java, `settings` -> settings.rs). Lowering
+files one step left 13; two steps left 0 but put long settings sections
+("Resume auto scanning after selection") above an exactly named resume file.
+Lowering sections with files gave 46/67 app-first, 0 file wins, `resume` still
+file-first, `bluetooth` still pane-first, and every real-query test passing.
+
+Consequences:
+
+- No single ladder satisfies every case; this is a compromise. Usage can no
+  longer lift a section or file above an app of equal raw strength
+  (`usage_does_not_lift_the_tail_over_the_head`). Learned ranking from
+  selections is the intended replacement (TASKS).

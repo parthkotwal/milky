@@ -5,7 +5,7 @@ use std::path::Path;
 
 use std::time::SystemTime;
 
-use crate::candidate::{Action, Candidate, FileFacts, Kind, folder_id};
+use crate::candidate::{Action, Candidate, FileFacts, Kind, Prior, folder_id};
 use crate::matching::{KeywordMatch, MatchKind, NameKey, keyword_match, match_key, words_of};
 
 /// How strong the evidence for a hit is, weakest to strongest; the first sort
@@ -338,14 +338,43 @@ pub fn with_typed_folder<'a>(
     hits
 }
 
-/// How two hits compare: `Less` means `a` ranks first. Tier, then usage, then
-/// prior (apps, places, settings, folders, files), then keyword match, then
+/// How many steps weaker a long-tail hit (a settings section, file, or folder)
+/// counts against the head (apps, places, settings panes). Two steps make a
+/// file named exactly `word` tie with an app that merely contains the word
+/// (`Microsoft Word`), and the tie goes to the app by prior. One step was not
+/// enough: 13 of 67 such queries still put a file above the app.
+const TAIL_STEPS: i8 = 2;
+
+/// How strongly a hit's evidence counts when ranked: its tier, lowered by
+/// [`TAIL_STEPS`] for the long tail. There are hundreds of setting sections
+/// (sentence-long titles) and thousands of files, against a few hundred apps,
+/// places, and panes, so a tail match needs stronger evidence to lead. Within
+/// the head or within the tail the order is unchanged.
+///
+/// Measured 2026-10-12, typing a later word of each app's name (67 queries):
+/// the app came first 46 times (was 14) and a file beat it 0 times (was 23);
+/// `resume` still leads with the resume files, `bluetooth` with its pane.
+fn standing(hit: &Hit) -> i8 {
+    let level = hit.tier as i8;
+    let tail = hit.candidate.file.is_some() || hit.candidate.prior() == Prior::Section;
+    if tail { level - TAIL_STEPS } else { level }
+}
+
+/// How two hits compare: `Less` means `a` ranks first. [`standing`] (tier,
+/// with the long tail two steps lower), then usage, then prior
+/// (apps, places, panes, sections, folders, files), then keyword match, then
 /// the more recently modified file or folder, then the shorter title, then
 /// title, then ID. Total: no two distinct hits compare `Equal` (IDs differ),
 /// so any correct selection or sort gives the same order.
+///
+/// Hand-set: no single ladder satisfies every case (a file's exact name
+/// should beat a long setting that starts with the word, an app should beat
+/// a file on a word of its name, and a pane should beat an app that starts
+/// with its name). Learning these weights from selections is the way out
+/// (TASKS, ranking).
 pub fn rank(a: &Hit, b: &Hit) -> Ordering {
-    b.tier
-        .cmp(&a.tier)
+    standing(b)
+        .cmp(&standing(a))
         .then_with(|| b.usage.total_cmp(&a.usage))
         .then_with(|| b.candidate.prior().cmp(&a.candidate.prior()))
         .then_with(|| b.keyword.cmp(&a.keyword))
@@ -1065,13 +1094,13 @@ mod tests {
 
     #[test]
     fn files_are_capped_when_other_results_can_fill_the_list() {
-        // Every file outranks every app (Exact vs Prefix), yet only 4 files
+        // Every file outranks every app (Exact vs Substring), yet only 4 files
         // make the list: the best 4, still ranked above the apps.
         let mut candidates: Vec<Candidate> = (0..3000)
             .map(|i| dated_file(&format!("/Users/someone/p{i}/report.txt"), i))
             .collect();
         candidates.extend((0..20).map(|i| {
-            candidate(&format!("app:/Applications/Report Viewer {i}.app"), Kind::App, &[&format!("Report Viewer {i}")])
+            candidate(&format!("app:/Applications/Myreport {i}.app"), Kind::App, &[&format!("Myreport {i}")])
         }));
         let hits = search(&candidates, "report", 10, |_| 0.0);
         assert_eq!(hits.len(), 10);
@@ -1227,22 +1256,62 @@ mod tests {
 
     #[test]
     fn usage_still_outranks_the_prior() {
+        // Both in the head: a used pane beats an unused app of equal strength.
         let candidates = [
-            candidate(
-                "settings:battery#options",
-                Kind::Setting,
-                &["Prevent automatic sleeping"],
-            ),
+            candidate("settings:com.apple.Displays", Kind::Setting, &["Presentation Displays"]),
             candidate("app:/Applications/Preview.app", Kind::App, &["Preview"]),
         ];
         let hits = search(&candidates, "pre", 10, |id| {
-            if id == "settings:battery#options" {
-                1.0
-            } else {
-                0.0
-            }
+            if id == "settings:com.apple.Displays" { 1.0 } else { 0.0 }
         });
-        assert_eq!(ids(&hits)[0], "settings:battery#options");
+        assert_eq!(ids(&hits)[0], "settings:com.apple.Displays");
+    }
+
+    #[test]
+    fn usage_does_not_lift_the_tail_over_the_head() {
+        // The accepted cost of TAIL_STEPS: a used section stays below an app
+        // of the same raw strength until ranking is learned from selections.
+        let candidates = [
+            candidate("settings:battery#options", Kind::Setting, &["Prevent automatic sleeping"]),
+            candidate("app:/Applications/Preview.app", Kind::App, &["Preview"]),
+        ];
+        let hits = search(&candidates, "pre", 10, |id| {
+            if id == "settings:battery#options" { 1.0 } else { 0.0 }
+        });
+        assert_eq!(ids(&hits)[0], "app:/Applications/Preview.app");
+    }
+
+    #[test]
+    fn an_app_beats_a_file_named_after_one_of_its_words() {
+        let candidates = [
+            file("/Users/someone/UW/332/Word.java"),
+            candidate("app:/Applications/Microsoft Word.app", Kind::App, &["Microsoft Word"]),
+        ];
+        assert_eq!(
+            ids(&search(&candidates, "word", 10, |_| 0.0)),
+            vec!["app:/Applications/Microsoft Word.app", "file:/Users/someone/UW/332/Word.java"]
+        );
+    }
+
+    #[test]
+    fn a_file_named_exactly_beats_a_section_that_starts_with_the_word() {
+        let candidates = [
+            candidate("settings:a11y#scan", Kind::Setting, &["Resume auto scanning after selection"]),
+            file("/Users/someone/resume.pdf"),
+        ];
+        assert_eq!(
+            ids(&search(&candidates, "resume", 10, |_| 0.0)),
+            vec!["file:/Users/someone/resume.pdf", "settings:a11y#scan"]
+        );
+    }
+
+    #[test]
+    fn a_pane_named_exactly_beats_an_app_that_starts_with_it() {
+        let candidates = [
+            candidate("app:/Applications/Utilities/Bluetooth File Exchange.app", Kind::App, &["Bluetooth File Exchange"]),
+            candidate("settings:com.apple.BluetoothSettings", Kind::Setting, &["Bluetooth"]),
+        ];
+        assert_eq!(ids(&search(&candidates, "bluetooth", 10, |_| 0.0))[0], "settings:com.apple.BluetoothSettings");
     }
 
     #[test]

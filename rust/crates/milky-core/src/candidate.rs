@@ -157,16 +157,30 @@ pub const ICLOUD_DRIVE: &str = "Library/Mobile Documents/com~apple~CloudDocs";
 pub fn display_path(path: &Path, home: &Path) -> String {
     let under = |root: &Path, label: &str| {
         let relative = path.strip_prefix(root).ok()?;
-        Some(if relative.as_os_str().is_empty() {
-            label.to_string()
-        } else {
-            format!("{label}/{}", relative.display())
-        })
+        Some(
+            std::iter::once(label)
+                .chain(finder_components(relative))
+                .collect::<Vec<_>>()
+                .join("/"),
+        )
     };
     under(&home.join(ICLOUD_DRIVE), "iCloud Drive")
         .or_else(|| under(home, "~"))
         .unwrap_or_else(|| path.display().to_string())
 }
+
+/// The folder names in `path` as Finder shows them: `Chrome Apps.localized`
+/// is shown as `Chrome Apps` (the `.localized` suffix is a macOS convention
+/// for folders whose name Finder translates).
+fn finder_components(path: &Path) -> impl Iterator<Item = &str> {
+    path.components().filter_map(|component| match component {
+        Component::Normal(name) => name.to_str().map(|name| name.strip_suffix(LOCALIZED).unwrap_or(name)),
+        _ => None,
+    })
+}
+
+/// The suffix of a folder whose name Finder shows localized.
+const LOCALIZED: &str = ".localized";
 
 /// A place as a candidate: named as Finder names it, also answering to its
 /// aliases, subtitled by where it is, opened in Finder.
@@ -202,7 +216,16 @@ pub fn file_id(path: &Path) -> Option<String> {
 /// exact match for `resume.pdf`; the extension is kept apart in
 /// [`FileFacts`]. Folders keep their whole name (`archive.v2`).
 pub fn from_file(entry: &FileEntry, home: &Path) -> Option<Candidate> {
-    let text = entry.path.file_name()?.to_str()?;
+    let file_name = entry.path.file_name()?.to_str()?;
+    // A `.localized` folder is shown, and typed, by the name Finder gives it:
+    // `Chrome Apps.localized` is "Chrome Apps".
+    let shown = match file_name.strip_suffix(LOCALIZED) {
+        Some(stripped) if entry.is_folder => {
+            crate::launch_services::localized_name(&entry.path).unwrap_or_else(|| stripped.to_string())
+        }
+        _ => file_name.to_string(),
+    };
+    let text = shown.as_str();
     let (kind, id, matched, extension) = if entry.is_folder {
         (Kind::Folder, folder_id(&entry.path)?, text, None)
     } else {
@@ -219,12 +242,7 @@ pub fn from_file(entry: &FileEntry, home: &Path) -> Option<Candidate> {
         (Kind::File, file_id(&entry.path)?, stem, extension)
     };
     let parent = entry.path.parent()?;
-    let mut folder_words: Vec<String> = location_below_root(parent, home)
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(name) => name.to_str(),
-            _ => None,
-        })
+    let mut folder_words: Vec<String> = finder_components(location_below_root(parent, home))
         .flat_map(words_of)
         .collect();
     folder_words.sort();
@@ -663,6 +681,17 @@ mod tests {
             vec!["2025", "taxes"],
             "not library or mobile documents"
         );
+    }
+
+    #[test]
+    fn localized_folders_go_by_their_finder_name() {
+        let home = Path::new("/Users/someone");
+        // Not on disk, so LaunchServices cannot answer: the suffix is dropped.
+        let folder = from_file(&entry("/Users/someone/Applications/Chrome Apps.localized", true), home).unwrap();
+        assert_eq!(folder.title(), "Chrome Apps");
+        let inside = from_file(&entry("/Users/someone/Music/Media.localized/song.mp3", false), home).unwrap();
+        assert_eq!(inside.subtitle, "~/Music/Media");
+        assert_eq!(facts(&inside).folder_words, vec!["media", "music"]);
     }
 
     #[test]
