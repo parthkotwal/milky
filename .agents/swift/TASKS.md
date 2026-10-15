@@ -55,6 +55,11 @@ quality follow-ups; they do not block the next product capability.
 - [x] Decode additive `files_ready` and wait for the live file index in the
       real-engine file test; missing flags retain legacy complete-snapshot
       behavior (core change, 2026-10-14).
+- [x] Render fixture-only Porcelain Index, Milk Glass Desk, and Opal Chamber
+      identity studies through the shared `swift` search corpus, including
+      invocation, results, file inspection, and actions (2026-10-14).
+- [ ] Choose one material identity direction, then integrate and refine it in
+      the normal launcher without changing Rust ranking or discovery.
 - [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
       behavior; record only concrete failures in ISSUES.md.
 - [ ] Add previews and secondary actions when a core result type supplies them.

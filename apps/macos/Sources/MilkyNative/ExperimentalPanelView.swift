@@ -692,32 +692,41 @@ private extension ExperimentalPanelView {
                     .foregroundStyle(palette.accent).buttonStyle(.plain)
             }
             .padding(.bottom, 7)
-            ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
-                let highlighted = state.selectedActionIndex == index
-                Button { Task { await state.chooseMenuAction(action) } } label: {
-                    HStack(spacing: 15) {
-                        Text(String(format: "%02d", index + 1))
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(palette.accent)
-                        Image(systemName: actionSymbol(action)).frame(width: 20)
-                        Text(actionLabel(action, for: result))
-                        Spacer()
-                        if highlighted { Image(systemName: "return") }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 7) {
+                        ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
+                            let highlighted = state.selectedActionIndex == index
+                            Button { Task { await state.chooseMenuAction(action) } } label: {
+                                HStack(spacing: 15) {
+                                    Text(String(format: "%02d", index + 1))
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(palette.accent)
+                                    Image(systemName: actionSymbol(action)).frame(width: 20)
+                                    Text(actionLabel(action, for: result))
+                                    Spacer()
+                                    if highlighted { Image(systemName: "return") }
+                                }
+                                .font(.system(size: 14, weight: highlighted ? .bold : .medium, design: .rounded))
+                                .foregroundStyle(palette.ink)
+                                .padding(.horizontal, 15)
+                                .frame(height: 50)
+                                .background(highlighted ? palette.raised : palette.surface,
+                                            in: RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(highlighted ? palette.accent : palette.rule.opacity(0.6),
+                                                  lineWidth: highlighted ? 1.2 : 0.7))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(highlighted ? .isSelected : [])
+                            .id(index)
+                        }
                     }
-                    .font(.system(size: 14, weight: highlighted ? .bold : .medium, design: .rounded))
-                    .foregroundStyle(palette.ink)
-                    .padding(.horizontal, 15)
-                    .frame(height: 50)
-                    .background(highlighted ? palette.raised : palette.surface,
-                                in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(highlighted ? palette.accent : palette.rule.opacity(0.6),
-                                      lineWidth: highlighted ? 1.2 : 0.7))
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(highlighted ? .isSelected : [])
+                .onChange(of: state.selectedActionIndex, initial: true) { _, index in
+                    proxy.scrollTo(index, anchor: .center)
+                }
             }
-            Spacer(minLength: 0)
         }
         .padding(15)
         .background(palette.surface, in: RoundedRectangle(cornerRadius: 17))

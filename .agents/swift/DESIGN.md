@@ -191,3 +191,28 @@ menu occupies the result area and uses Up/Down, Return, and Escape. Inspection
 occupies the same area with a Quick Look preview and Back control. Escape
 returns to the result list before dismissing the launcher. The query remains
 visible and editable; changing it closes either overlay immediately.
+
+## Material identity studies — 2026-10-14
+
+Three separate fixture-only compositions explore a broader identity while the
+chosen Hybrid panel remains the normal launcher view:
+
+- `porcelain`: an editorial index, warm opaque surfaces, serif headings, and a
+  narrow identity rail. Search, results, inspection, and actions occupy the main
+  page in turn.
+- `milk-glass`: a search desk with a ranked list and persistent selected-item
+  pane. Inspection and actions replace the selected-item pane; the two columns
+  collapse to one at narrow widths.
+- `opal`: an intentionally bold composition with a large query vessel,
+  iridescent ring, numbered result cards, and a dark chamber appearance. Its
+  action list scrolls when the panel is short.
+
+All three use the same deterministic `swift` fixture with real repo file and
+folder URLs plus an installed Xcode app. The Swift view shares LauncherState,
+the AppKit query field, Quick Look, and result actions. Reduced Motion disables
+its transition; Reduced Transparency removes decorative light effects without
+removing the opaque text surfaces. This is a review experiment, not a new
+production design decision. Run `scripts/run-fixtures.sh --concept=porcelain`
+(or `milk-glass` / `opal`) and search `swift`; snapshots use
+`scripts/snapshot.sh --concept CONCEPT --query swift` with optional
+`--inspect`, `--actions`, `--appearance`, `--width`, and `--height`.
