@@ -421,29 +421,38 @@ private extension ExperimentalPanelView {
             }
             .padding(20)
             Rectangle().fill(palette.rule).frame(height: 1)
-            ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
-                let highlighted = state.selectedActionIndex == index
-                Button { Task { await state.chooseMenuAction(action) } } label: {
-                    HStack(spacing: 14) {
-                        Text(String(format: "%02d", index + 1))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(palette.accent)
-                        Image(systemName: actionSymbol(action)).frame(width: 22)
-                        Text(actionLabel(action, for: result))
-                        Spacer()
-                        if highlighted { Image(systemName: "return") }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
+                            let highlighted = state.selectedActionIndex == index
+                            Button { Task { await state.chooseMenuAction(action) } } label: {
+                                HStack(spacing: 14) {
+                                    Text(String(format: "%02d", index + 1))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(palette.accent)
+                                    Image(systemName: actionSymbol(action)).frame(width: 22)
+                                    Text(actionLabel(action, for: result))
+                                    Spacer()
+                                    if highlighted { Image(systemName: "return") }
+                                }
+                                .font(.system(size: 14, weight: highlighted ? .semibold : .regular))
+                                .foregroundStyle(palette.ink)
+                                .padding(.horizontal, 20)
+                                .frame(height: 53)
+                                .background(highlighted ? palette.raised : .clear)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(highlighted ? .isSelected : [])
+                            .id(index)
+                            Rectangle().fill(palette.rule).frame(height: 1).padding(.leading, 20)
+                        }
                     }
-                    .font(.system(size: 14, weight: highlighted ? .semibold : .regular))
-                    .foregroundStyle(palette.ink)
-                    .padding(.horizontal, 20)
-                    .frame(height: 53)
-                    .background(highlighted ? palette.raised : .clear)
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(highlighted ? .isSelected : [])
-                Rectangle().fill(palette.rule).frame(height: 1).padding(.leading, 20)
+                .onChange(of: state.selectedActionIndex, initial: true) { _, index in
+                    proxy.scrollTo(index, anchor: .center)
+                }
             }
-            Spacer(minLength: 0)
         }
     }
 
