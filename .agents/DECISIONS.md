@@ -771,3 +771,60 @@ Consequences:
   mouse, Classroom) are still listed. Accessibility is 342 of 711 entries,
   which is why sections rank as the long tail (DECISIONS 2026-10-12).
 - Apple writes "Wi‑Fi" with U+2011, so dashes are folded away in matching.
+
+---
+
+## 2026-10-14 — A live file index: background start, snapshots, folder-level updates
+
+Status: implemented 2026-10-14 (`engine.rs` `Snapshots`/`Index`, `indexer.rs`).
+
+Decision:
+
+- `Engine::new` loads apps, places, and settings and returns; the file walk
+  runs on a background thread and its results are published when ready.
+  Searches before then simply have no files. The engine reports whether files
+  are ready (`files_ready`), an additive field Swift may show or ignore.
+- The index is an immutable snapshot behind `Arc`; a search clones the
+  pointer and runs without holding a lock; updates build a new snapshot and
+  swap it in. Searches never see a half-updated index or wait on the indexer.
+- FSEvents through the `notify` crate, watching the home folder, iCloud Drive,
+  and the app folders. An event matters only if its folder is indexed (one
+  set lookup); events are grouped for ~300 ms; each changed folder is re-read
+  and diffed against the index (new folders walked, deleted folders removed
+  with their contents); content edits only update the modified date. If
+  FSEvents reports it lost track, rescan everything. The watcher starts before
+  the initial walk so no change is missed.
+- The same rules (hidden, packages, generated, exclusions) decide entries in
+  full walks and per-folder updates.
+
+Why:
+
+Measured 2026-10-13, 90 s of normal use plus one Rust build: 37,004 path
+events, peaking at 11,342/s; 86% in hidden folders, 10% in `~/Library`, and of
+the remaining 1,566 all but one were in `target/`, which is never indexed. A
+full rescan plus rebuild costs ~55 ms for ~5k files (20 ms walk, 33 ms build)
+and grows with the file count, so rebuilding per event, or even per burst
+during a build, is wasteful; re-reading one folder costs ~0.16 ms. `notify` is
+the maintained FSEvents wrapper; hand-written bindings would mean C callbacks
+for no gain, and only one module touches it, so it can be replaced later.
+
+Consequences:
+
+- Startup no longer grows with the number of files (~55 ms warm here).
+- New dependency: `notify` (~25 small crates).
+- The watcher can count per-folder activity cheaply, a future ranking feature
+  (TASKS).
+
+Implementation notes (2026-10-14), appended to the entry above:
+
+- `Engine::index()` returns an `Arc<Index>`; `Engine::search(&index, ...)`
+  borrows from it. The indexer thread holds a `FileIndex` (`BTreeMap` by
+  path, so a folder's contents are one key range) and applies re-read folders
+  with `FileIndex::apply_listing`. Messages: file events, `Rescan` (from
+  `Engine::reindex`, now asynchronous), `Stop` (from `Drop`).
+- The home folder is canonicalized at discovery: FSEvents reports real paths
+  (`/private/var/...` for `/var/...`), and the index must use the same ones.
+- Search replies carry `files_ready` (additive). Measured here: engine ready
+  in ~0.11 s, files after ~0.18 s; a created or deleted file appears in under
+  a second; a full Rust build cost the indexer 0.06 s of CPU, all filtered.
+- `libmilky_ffi.a` now also needs the CoreServices framework (FSEvents).

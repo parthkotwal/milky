@@ -127,6 +127,27 @@ Reopening selects the saved query text and refreshes it through the current Rust
 provider; old rows remain visible during the refresh, and selection follows the
 same stable ID if it is still present. This changes no Rust or FFI contract.
 
+## Core changes — 2026-10-14: live file index
+
+- Files and folders now arrive from a background thread: right after
+  `milky_engine_new` a search finds apps, places, and settings but no files,
+  for ~0.2 s here (longer on large home folders). Search replies carry
+  `files_ready` (bool, additive): `false` means files were not searched yet.
+  Showing that (e.g. "Indexing files…") is a UI choice.
+- The index then follows file changes live (FSEvents): new, renamed, and
+  deleted files show up within about a second without restarting.
+- `milky_engine_new` returns sooner (no file walk); `milky_engine_free` now
+  stops the indexer thread and waits for it (a fraction of a second at most,
+  longer only if freed mid-walk).
+- `libmilky_ffi.a` needs CoreServices (FSEvents); the core owner added
+  `link framework "CoreServices"` to `module.modulemap`.
+- Swift's `RustSearchProvider` decodes the additive `files_ready` field in an
+  internal search snapshot; the app-facing provider still returns results only.
+  A missing field means a complete synchronous snapshot for compatibility.
+- `testRealEngineReturnsProjectSourceFiles` polls the same query until
+  `files_ready: true` before asserting the indexed source. The behavior is
+  covered with the current archive; an indexing status UI remains optional.
+
 ## Agreed integration
 
 ### Contract v3 — agreed and wired 2026-10-08

@@ -30,10 +30,21 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
               let design = PanelDesign(rawValue: String(value)) else { return .hybrid }
         return design
     }
+    private var visualConcept: VisualConcept? {
+        guard fixtures,
+              let value = CommandLine.arguments.first(where: { $0.hasPrefix("--concept=") })?.dropFirst("--concept=".count)
+        else { return nil }
+        return VisualConcept(rawValue: String(value))
+    }
     private let rust = RustSearchProvider()
-    private lazy var state = LauncherState(provider: fixtures ? FixtureSearchProvider() : rust,
-                                           opener: NativeAppOpener(),
-                                           eventRecorder: fixtures ? nil : rust)
+    private lazy var state: LauncherState = {
+        let provider: any SearchProvider
+        if visualConcept != nil { provider = DesignFixtureSearchProvider() }
+        else if fixtures { provider = FixtureSearchProvider() }
+        else { provider = rust }
+        return LauncherState(provider: provider, opener: NativeAppOpener(),
+                             eventRecorder: fixtures ? nil : rust)
+    }()
     private var preparation: Task<Void, Never>?
     private var terminating = false
     private var displayName: String { fixtures ? "Milky — Fixtures" : "Milky" }
@@ -82,9 +93,16 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.dismissAction = { [weak self] in self?.dismissOrClose() }
-        panel.contentView = NSHostingView(rootView: LauncherView(state: state, fixtures: fixtures,
-                                                                 design: panelDesign) { [weak self] in
-            self?.dismissOrClose()
+        panel.contentView = NSHostingView(rootView: Group {
+            if let concept = visualConcept {
+                ExperimentalPanelView(state: state, concept: concept) { [weak self] in
+                    self?.dismissOrClose()
+                }
+            } else {
+                LauncherView(state: state, fixtures: fixtures, design: panelDesign) { [weak self] in
+                    self?.dismissOrClose()
+                }
+            }
         })
         if CommandLine.arguments.contains("--appearance=light") { panel.appearance = NSAppearance(named: .aqua) }
         if CommandLine.arguments.contains("--appearance=dark") { panel.appearance = NSAppearance(named: .darkAqua) }

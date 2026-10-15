@@ -52,6 +52,9 @@ quality follow-ups; they do not block the next product capability.
 - [x] Preserve the previous query/results when reopening, select the query for
       immediate replacement, and refresh Rust ranking without losing a still
       available selected result (2026-10-13).
+- [x] Decode additive `files_ready` and wait for the live file index in the
+      real-engine file test; missing flags retain legacy complete-snapshot
+      behavior (core change, 2026-10-14).
 - [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
       behavior; record only concrete failures in ISSUES.md.
 - [ ] Add previews and secondary actions when a core result type supplies them.

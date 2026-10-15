@@ -62,9 +62,13 @@ with an ID, title, subtitle, and action):
 - `files.rs`: the home folder and iCloud Drive as Finder shows them, minus
   generated folders and the user's `exclusions.txt`.
 
-Here: 127 apps, 13 places, 606 settings, ~5k files and folders. The engine
-builds all of it in `Engine::new` (0.11 s warm, 0.43 s cold) and holds it in
-memory; the file index does not refresh until the engine is rebuilt.
+Here: 127 apps, 13 places, 606 settings, ~5k files and folders. `Engine::new`
+finds apps, places, and settings (~0.11 s) and publishes them as the first
+`Index` snapshot; a background thread (`indexer.rs`) walks the files and
+publishes them (~0.18 s here), then follows FSEvents: events outside indexed
+folders are dropped, each ~300 ms burst re-reads only the folders that
+changed, and apps are re-discovered when `/Applications` changes. Searches
+clone the current `Arc<Index>` and never wait for the indexer.
 
 A query (`search.rs`, ~0.2-0.35 ms here):
 

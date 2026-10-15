@@ -51,7 +51,7 @@ struct FileInspectionView: View {
     }
 }
 
-private struct QuickLookFilePreview: NSViewRepresentable {
+struct QuickLookFilePreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> QLPreviewView {

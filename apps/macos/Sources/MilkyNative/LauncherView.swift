@@ -375,7 +375,7 @@ public struct LauncherView: View {
     }
 }
 
-private struct ResultIcon: View {
+struct ResultIcon: View {
     let result: AppResult
     @State private var image: NSImage?
     var body: some View {
@@ -401,7 +401,7 @@ private struct ResultIcon: View {
 }
 
 /// Uses the native field editor so arrows/Return/Escape respect marked IME text.
-private struct QueryField: NSViewRepresentable {
+struct QueryField: NSViewRepresentable {
     @Binding var value: String
     let enabled: Bool
     let up: () -> Void

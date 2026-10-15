@@ -42,8 +42,10 @@ import XCTest
     }
 
     func testDecodePreservesOrderIdentityUnicodeAndAllowsAdditionalFields() throws {
-        let data = Data(#"{"kind":"search","query":"idle","results":[{"id":"app:/第二/IDLE.app","kind":"app","title":"IDLE","subtitle":"第二","action":{"type":"launch","path":"/第二/IDLE.app"},"match_kind":"exact","future":42},{"id":"app:/first/IDLE.app","kind":"app","title":"IDLE","subtitle":"first","action":{"type":"launch","path":"/first/IDLE.app"},"match_kind":"prefix"}]}"#.utf8)
-        let values = try RustSearchProvider.decode(data, expectedQuery: "idle")
+        let data = Data(#"{"kind":"search","query":"idle","files_ready":false,"results":[{"id":"app:/第二/IDLE.app","kind":"app","title":"IDLE","subtitle":"第二","action":{"type":"launch","path":"/第二/IDLE.app"},"match_kind":"exact","future":42},{"id":"app:/first/IDLE.app","kind":"app","title":"IDLE","subtitle":"first","action":{"type":"launch","path":"/first/IDLE.app"},"match_kind":"prefix"}]}"#.utf8)
+        let snapshot = try RustSearchProvider.decodeSearchSnapshot(data, expectedQuery: "idle")
+        let values = snapshot.results
+        XCTAssertFalse(snapshot.filesReady)
         XCTAssertEqual(values.map(\.id), ["app:/第二/IDLE.app", "app:/first/IDLE.app"])
         XCTAssertEqual(values.map(\.name), ["IDLE", "IDLE"])
         XCTAssertEqual(values.map(\.subtitle), ["第二", "first"])
@@ -54,6 +56,12 @@ import XCTest
         let result = try XCTUnwrap(RustSearchProvider.decode(data, expectedQuery: "wifi").first)
         XCTAssertEqual(result.kind, .setting)
         XCTAssertEqual(result.action, .openURL(URL(string: "x-apple.systempreferences:com.apple.wifi?Advanced")!))
+    }
+
+    func testMissingFilesReadyMeansTheLegacySnapshotIsComplete() throws {
+        let data = Data(#"{"kind":"search","query":"x","results":[]}"#.utf8)
+        let snapshot = try RustSearchProvider.decodeSearchSnapshot(data, expectedQuery: "x")
+        XCTAssertTrue(snapshot.filesReady)
     }
 
     func testRealEngineReturnsSettingsWithOpenURLActions() async throws {
@@ -139,7 +147,15 @@ import XCTest
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
 
         let provider = RustSearchProvider(limit: 20)
-        let results = try await provider.search(query: "LauncherStateTests")
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(30))
+        var snapshot = try await provider.searchSnapshot(query: "LauncherStateTests")
+        while !snapshot.filesReady, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+            snapshot = try await provider.searchSnapshot(query: "LauncherStateTests")
+        }
+        XCTAssertTrue(snapshot.filesReady, "The background index should become ready during the test")
+        let results = snapshot.results
         let source = try XCTUnwrap(results.first { $0.id == "file:\(sourceURL.path)" })
         XCTAssertEqual(source.kind, .file)
         XCTAssertEqual(source.title, "LauncherStateTests.swift")

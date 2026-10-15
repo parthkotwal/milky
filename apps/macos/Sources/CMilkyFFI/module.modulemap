@@ -9,5 +9,8 @@ module CMilkyFFI {
     // Settings discovery asks IOKit whether this Mac has a battery
     // ("Battery" vs "Energy" pane name).
     link framework "IOKit"
+    // The live file index follows file changes through FSEvents, which lives
+    // in CoreServices.
+    link framework "CoreServices"
     export *
 }

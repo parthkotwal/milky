@@ -8,15 +8,6 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 ## Now
 
-- [ ] Background indexing (file search step 4). The engine answers for apps,
-      places, and settings at once; the file walk runs on a background thread
-      and its results join when ready. New concepts: threads, sharing data
-      between them. Today the walk is synchronous in `Engine::new`: 0.11 s warm,
-      0.43 s cold for ~5k files here, and it grows with the file count.
-- [ ] Freshness (file search step 6): new, renamed, and deleted files appear
-      without restarting, via FSEvents. Today the file index is fixed at
-      engine start.
-
 ## Soon
 
 - [ ] Offline ranking evaluation: replay `events.jsonl` queries against the
@@ -31,6 +22,14 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       `TAIL_STEPS` is the current compromise; usage cannot lift a section or
       file over an app of equal strength. Needs the evaluation above and more
       selections first.
+- [ ] Folder activity as a ranking feature (raised 2026-10-14): a decayed
+      per-folder count of file changes, rolled up to the project root (a
+      folder with `.git`, `Cargo.toml`, `package.json`, ...), so files in the
+      area being worked on rank higher among equals (`readme` -> the active
+      project's README). Machine churn (agents, builds, sync) says the project
+      is active, not that its files are wanted: cap bursts, never count a file
+      more relevant for being rewritten. A feature for the learned ranker, not
+      a hand-set rule; the live index's watcher can count it cheaply.
 - [ ] Usage is three separate features, not one number. Keep them separate so
       each can be weighted and debugged independently:
       1. invocation frecency — decayed launch count, in `usage.rs`;
@@ -63,6 +62,9 @@ Keep entries concise. Remove or move completed items when they no longer help fu
         only;
       - files: `final report` is a word-prefix (not prefix) match for
         `final-report`, because folding drops dashes.
+- [ ] Indexer publish cost: each update rebuilds every candidate (~33 ms for
+      ~5k files here), at most once per 300 ms batch. Keep file candidates
+      between updates and rebuild only changed entries if file counts grow.
 - [ ] Small: cache folder words per folder when building file candidates
       (~140 ms for 23k entries, recomputed per file); `milky` panics on a
       closed stdout (`milky --files | head`).
@@ -88,6 +90,9 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 ## Done
 
 Milestones, newest first. Details live in the DECISIONS entries named.
+
+- Live file index: snapshots, a background indexer, FSEvents-driven updates
+  of files and apps; `milky --watch` (2026-10-14).
 
 - Swift records Open, Reveal, and Copy outcomes through the existing selection
   message and logs recording failures locally (2026-10-13; Swift decision).

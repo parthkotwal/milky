@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use milky_core::engine::Engine;
 use milky_core::files::{self, Exclusions};
@@ -27,6 +27,8 @@ USAGE:
     milky --settings          list System Settings panes and their sections
     milky --files             walk the home folder and iCloud Drive: counts,
                               timing, unreadable folders, largest folders
+    milky --watch             keep the engine running and print each index
+                              update as files change (Ctrl-C to stop)
 
 OPTIONS:
     --limit N                 maximum results (default 10)
@@ -83,18 +85,28 @@ fn main() -> ExitCode {
     // keystroke.
     let started = Instant::now();
     let engine = Engine::new();
-    let scan = started.elapsed();
+    let ready = started.elapsed();
+    // Files arrive from a background thread; a headless one-shot query wants
+    // them, so wait (the launcher does not).
+    let files_ready = engine.wait_for_files(Duration::from_secs(60));
+    let with_files = started.elapsed();
     eprintln!(
-        "indexed {} apps, {} places, {} settings, and {} files and folders in {:.1?}",
+        "indexed {} apps, {} places, {} settings in {:.1?}; {} files and folders {} {:.1?}",
         engine.app_count(),
         engine.place_count(),
         engine.settings_count(),
+        ready,
         engine.file_count(),
-        scan
+        if files_ready { "after" } else { "still walking after" },
+        with_files
     );
 
     if options.count {
         return ExitCode::SUCCESS;
+    }
+
+    if options.watch {
+        watch(&engine);
     }
 
     match options.query {
@@ -112,6 +124,7 @@ struct Options {
     count: bool,
     settings: bool,
     files: bool,
+    watch: bool,
     help: bool,
 }
 
@@ -122,6 +135,7 @@ impl Options {
         let mut help = false;
         let mut settings = false;
         let mut files = false;
+        let mut watch = false;
         let mut words: Vec<&str> = Vec::new();
 
         let mut rest = args.iter();
@@ -139,6 +153,7 @@ impl Options {
                 "--count" => count = true,
                 "--settings" => settings = true,
                 "--files" => files = true,
+                "--watch" => watch = true,
                 "-h" | "--help" => help = true,
                 other if other.starts_with('-') => {
                     return Err(format!("unknown option '{other}'"));
@@ -161,6 +176,7 @@ impl Options {
             count,
             settings,
             files,
+            watch,
             help,
         })
     }
@@ -168,7 +184,8 @@ impl Options {
 
 fn run_query(engine: &Engine, query: &str, limit: usize) {
     let started = Instant::now();
-    let results = engine.search(query, limit);
+    let index = engine.index();
+    let results = engine.search(&index, query, limit);
     let elapsed = started.elapsed();
 
     print_results(&results, elapsed);
@@ -329,5 +346,38 @@ fn tilde(path: &Path, home: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(relative) => format!("~/{}", relative.display()),
         Err(_) => path.display().to_string(),
+    }
+}
+
+/// Print every index update as it is published: how many files and folders,
+/// and which appeared or disappeared. Runs until interrupted.
+fn watch(engine: &Engine) -> ! {
+    eprintln!("watching for changes; Ctrl-C to stop");
+    let mut last = engine.index();
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        let current = engine.index();
+        if std::sync::Arc::ptr_eq(&current, &last) {
+            continue;
+        }
+        let ids = |index: &milky_core::engine::Index| -> std::collections::BTreeSet<String> {
+            index.candidates().iter().map(|candidate| candidate.id.clone()).collect()
+        };
+        let (before, after) = (ids(&last), ids(&current));
+        let added: Vec<&String> = after.difference(&before).collect();
+        let removed: Vec<&String> = before.difference(&after).collect();
+        println!(
+            "{} files and folders  (+{} -{})",
+            current.count(milky_core::candidate::Kind::File) + current.count(milky_core::candidate::Kind::Folder),
+            added.len(),
+            removed.len()
+        );
+        for id in added.iter().take(5) {
+            println!("  + {id}");
+        }
+        for id in removed.iter().take(5) {
+            println!("  - {id}");
+        }
+        last = current;
     }
 }

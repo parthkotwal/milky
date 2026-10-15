@@ -380,3 +380,51 @@ and `.agents/swift/INTEGRATION.md` (2026-10-13).
 Lesson:
 Learned ranking is only as good as the log. Count events against real use
 before building on them.
+
+---
+
+## 2026-10-14 — Swift link failed again after a new native dependency
+
+Status: resolved
+Area: build
+
+Symptom:
+`scripts/build.sh test` failed with undefined `_FSEventStreamCreate` and
+related symbols after adding `notify`. All Rust tests passed.
+
+Cause:
+The same trap as 2026-10-08: Cargo links a crate's frameworks for Rust
+binaries, but the Swift package links `libmilky_ffi.a` through the
+hand-written `module.modulemap`, which lists frameworks explicitly. `notify`
+uses FSEvents, in CoreServices.
+
+Fix / workaround:
+`link framework "CoreServices"` in `Sources/CMilkyFFI/module.modulemap`.
+
+Lesson:
+After adding any Rust dependency, run `apps/macos/scripts/build.sh test`, not
+only `cargo test`, and compare `cargo rustc -p milky-ffi --lib --crate-type
+staticlib -- --print native-static-libs` against the module map.
+
+---
+
+## 2026-10-14 — File events use real paths; `/var` is a link
+
+Status: resolved
+Area: rust-core
+
+Symptom:
+(Anticipated while building the live index, confirmed in its tests.) Temp
+folders live under `/var/folders/...`, but FSEvents reports
+`/private/var/folders/...`.
+
+Cause:
+`/var` is a symbolic link to `/private/var`. An index keyed by the link path
+never matches the events.
+
+Fix / workaround:
+The home folder is canonicalized in `discover_sources`; tests canonicalize
+their made-up home folders.
+
+Lesson:
+Compare paths from the OS only after resolving links on both sides.

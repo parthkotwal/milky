@@ -6,6 +6,7 @@ pub mod candidate;
 pub mod engine;
 pub mod events;
 pub mod files;
+pub mod indexer;
 pub mod launch_services;
 pub mod matching;
 pub mod places;

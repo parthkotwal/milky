@@ -44,6 +44,10 @@ pub enum Response {
 pub struct SearchResponse {
     pub query: String,
     pub results: Vec<ResultItem>,
+    /// Whether files and folders were searched. `false` only in the moments
+    /// after the engine starts, before the background walk is published.
+    /// Additive in contract v4: clients that do not know it ignore it.
+    pub files_ready: bool,
 }
 
 /// One search result on the wire (contract v4, DECISIONS 2026-10-08).

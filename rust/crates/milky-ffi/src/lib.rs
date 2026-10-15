@@ -47,7 +47,10 @@ pub unsafe extern "C" fn milky_engine_free(engine: *mut MilkyEngine) {
         return;
     }
     let boxed = unsafe { Box::from_raw(engine) };
-    let _ = catch_unwind(|| drop(boxed));
+    // `AssertUnwindSafe`: the engine now owns a thread handle, which Rust
+    // cannot prove unwind-safe. Nothing touches the engine after this call, so
+    // a panic mid-drop cannot leave state that anyone observes.
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(boxed)));
 }
 
 /// Handle one JSON request. Returns an owned JSON response, never null; release

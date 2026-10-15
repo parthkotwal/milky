@@ -2,6 +2,11 @@ import CMilkyFFI
 import Foundation
 import MilkyNative
 
+struct SearchSnapshot: Sendable {
+    let results: [AppResult]
+    let filesReady: Bool
+}
+
 /// All handle access is actor-isolated. No pointer escapes and no unchecked
 /// Sendable conformance is needed. Synchronous requests finish before shutdown.
 public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
@@ -17,12 +22,16 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
     }
 
     public func search(query: String) async throws -> [AppResult] {
+        try await searchSnapshot(query: query).results
+    }
+
+    func searchSnapshot(query: String) async throws -> SearchSnapshot {
         try Task.checkCancellation()
         try prepare()
         let request = try JSONEncoder().encode(SearchRequest(query: query, limit: limit))
         let copied = try engine!.request(request)
         try Task.checkCancellation()
-        return try Self.decode(copied, expectedQuery: query)
+        return try Self.decodeSearchSnapshot(copied, expectedQuery: query)
     }
 
     public func recordSelection(_ event: MilkyNative.SelectionEvent) async throws {
@@ -57,6 +66,10 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
     }
 
     static func decode(_ data: Data, expectedQuery: String) throws -> [AppResult] {
+        try decodeSearchSnapshot(data, expectedQuery: expectedQuery).results
+    }
+
+    static func decodeSearchSnapshot(_ data: Data, expectedQuery: String) throws -> SearchSnapshot {
         do {
             let reply = try JSONDecoder().decode(Reply.self, from: data)
             switch reply.kind {
@@ -66,7 +79,7 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
             case "search":
                 guard reply.query == expectedQuery, let results = reply.results else { throw BridgeError.invalidResponse }
                 var identities = Set<String>()
-                return try results.map { result in
+                let values = try results.map { result in
                     guard !result.id.isEmpty, !result.id.contains("\0"), identities.insert(result.id).inserted else {
                         throw BridgeError.invalidResponse
                     }
@@ -93,6 +106,10 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
                     return AppResult(id: result.id, kind: result.kind, title: result.title,
                                      subtitle: result.subtitle, action: action)
                 }
+                // Before the live index contract, a successful reply contained the
+                // complete synchronous search set. Treat a missing additive field
+                // as ready for compatibility with that response shape.
+                return SearchSnapshot(results: values, filesReady: reply.filesReady ?? true)
             default: throw BridgeError.invalidResponse
             }
         } catch let error as BridgeError { throw error }
@@ -125,9 +142,15 @@ private struct Reply: Decodable {
     let kind: String
     let query: String?
     let results: [Item]?
+    let filesReady: Bool?
     // `record_selection` success has kind `recorded` and no other fields.
     let reason: String?
     let message: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, query, results, reason, message
+        case filesReady = "files_ready"
+    }
 
     struct Item: Decodable {
         let id: String

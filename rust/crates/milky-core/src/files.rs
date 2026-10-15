@@ -153,57 +153,57 @@ pub fn walk(root: &Path, exclusions: &Exclusions) -> Walk {
     let mut found = Walk::default();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let children = match std::fs::read_dir(&dir) {
-            Ok(children) => children,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(_) => {
-                found.unreadable.push(dir);
-                continue;
-            }
-        };
-
-        for child in children.flatten() {
-            let name = child.file_name();
-            if is_dot_name(&name) {
-                continue;
-            }
-            let Ok(file_type) = child.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() && !file_type.is_file() {
-                continue;
-            }
-            // One `lstat` per entry, for both the hidden flag and recency.
-            let metadata = child.metadata().ok();
-            if metadata.as_ref().is_some_and(has_hidden_flag) {
-                continue;
-            }
-            let modified = metadata.and_then(|metadata| metadata.modified().ok());
-            let path = child.path();
-
-            if file_type.is_dir() {
-                if exclusions.excludes(&path, &name) || has_generated_marker(&path) {
-                    continue;
+        match read_folder(&dir, exclusions) {
+            Ok(children) => {
+                for child in children {
+                    if child.is_folder {
+                        pending.push(child.path.clone());
+                    }
+                    found.entries.push(child);
                 }
-                let is_folder = !is_package(&path);
-                if is_folder {
-                    pending.push(path.clone());
-                }
-                found.entries.push(FileEntry {
-                    path,
-                    is_folder,
-                    modified,
-                });
-            } else {
-                found.entries.push(FileEntry {
-                    path,
-                    is_folder: false,
-                    modified,
-                });
             }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(_) => found.unreadable.push(dir),
         }
     }
     found
+}
+
+/// The entries directly inside `dir` that the rules keep: what [`walk`]
+/// records for one folder, without going deeper. Used on its own to re-read
+/// a folder that changed. `Err` if `dir` cannot be read: missing, or blocked
+/// by macOS privacy settings.
+pub fn read_folder(dir: &Path, exclusions: &Exclusions) -> std::io::Result<Vec<FileEntry>> {
+    let mut entries = Vec::new();
+    for child in std::fs::read_dir(dir)?.flatten() {
+        let name = child.file_name();
+        if is_dot_name(&name) {
+            continue;
+        }
+        let Ok(file_type) = child.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() && !file_type.is_file() {
+            continue;
+        }
+        // One `lstat` per entry, for both the hidden flag and recency.
+        let metadata = child.metadata().ok();
+        if metadata.as_ref().is_some_and(has_hidden_flag) {
+            continue;
+        }
+        let modified = metadata.and_then(|metadata| metadata.modified().ok());
+        let path = child.path();
+        let is_folder = if file_type.is_dir() {
+            if exclusions.excludes(&path, &name) || has_generated_marker(&path) {
+                continue;
+            }
+            !is_package(&path)
+        } else {
+            false
+        };
+        entries.push(FileEntry { path, is_folder, modified });
+    }
+    Ok(entries)
 }
 
 /// The folders a walk starts from: the home folder and iCloud Drive (which
@@ -496,6 +496,23 @@ mod tests {
             .unwrap();
         assert!(status.success());
         assert_eq!(listed(&walked(&root), &root), vec!["shown.txt"]);
+    }
+
+    #[test]
+    fn reading_one_folder_applies_the_same_rules_without_going_deeper() {
+        let root = scratch("one-folder");
+        touch(&root.join("notes.txt"));
+        touch(&root.join(".hidden"));
+        touch(&root.join("node_modules/x.js"));
+        touch(&root.join("school/ex01.pdf"));
+        let mut names: Vec<String> = read_folder(&root, &Exclusions::defaults(&root))
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["notes.txt", "school"]);
+        assert!(read_folder(&root.join("missing"), &Exclusions::default()).is_err());
     }
 
     #[test]
