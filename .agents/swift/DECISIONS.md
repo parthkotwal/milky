@@ -289,3 +289,38 @@ the existing selection event. Reveal and Copy are not sent as `opened` usage
 events because that outcome currently means a successful primary launch/open;
 a future action-specific event requires core agreement. The inspector and menu
 close on a changed query or selection so stale URLs cannot be acted on.
+
+## 2026-10-13 — Record secondary result choices
+
+Decision: Record successful and failed Reveal in Finder and Copy Path/Link
+actions through the existing `record_selection` message. Keep the `opened` and
+`failed` values as action outcomes; no boundary change is needed. Report a
+rejected event's safe reason to the local unified log, without logging the
+underlying message, query, or result ID.
+
+Why: These actions express a choice of result just like primary Open, and the
+usage history is small enough that omitting common actions materially weakens
+the evidence available for learned ranking. Core requested this behavior in
+`.agents/swift/INTEGRATION.md` on 2026-10-13.
+
+Consequences: Recording is best-effort and asynchronous, so it does not delay
+the native action or its feedback. Fixture mode remains excluded because it
+does not provide an event recorder. This supersedes the 2026-10-09 note that
+Reveal and Copy were not recorded pending core agreement.
+
+## 2026-10-13 — Restore the last query on invocation
+
+Decision: Keep the last query and results after dismissal. On the next session,
+select the preserved query text so typing replaces it, and rerun that query
+through Rust. Keep prior rows visible during the refresh and preserve the
+selected destination by stable ID if it remains in the new ranking.
+
+Why: The user expects the same continuity as Spotlight: close search, return,
+and see the prior query and its destinations. Selecting the query makes a new
+search immediate without an extra Command-A.
+
+Consequences: A reopened non-empty query briefly disables actions while Rust
+refreshes, preventing stale rows from launching under a new engine response.
+If the selected destination disappears, the existing refresh rule selects the
+first result. A late response from the previous session remains invalidated by
+the generation token.

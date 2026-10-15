@@ -180,12 +180,22 @@ private final class EngineHandle {
     deinit { milky_engine_free(pointer) }
 }
 
-public enum BridgeError: LocalizedError {
+public enum BridgeError: LocalizedError, SafeDiagnosticError {
     case version(UInt32)
     case initialization
     case invalidResponse
     case engine(reason: String, message: String)
     case closed
+
+    public var safeDiagnostic: String {
+        switch self {
+        case .version: "abi_version"
+        case .initialization: "initialization"
+        case .invalidResponse: "invalid_response"
+        case .engine(let reason, _): reason
+        case .closed: "closed"
+        }
+    }
 
     public var errorDescription: String? {
         switch self {

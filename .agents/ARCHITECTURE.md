@@ -44,32 +44,48 @@ A separate Python workspace is used for model experiments, offline evaluation, t
 
 ## Built so far
 
-`milky-core` holds the engine: `normalize_query`, app bundle discovery under
-`/Applications`, `/System/Applications`, `~/Applications` and one level of
-subdirectories, a `MatchKind` ladder, and an `Engine` that scans once and
-answers queries. `milky-cli` (`milky`) drives it headlessly, including an
-interactive mode against one warm engine. `milky-ffi` exposes the
-five-function ABI; `api.rs` holds the wire types. `record_selection` messages
-append to `events.jsonl` and update `usage.json` (decayed launch scores) under a
-`Mutex` in the engine, in `~/Library/Application Support/Milky/`. Usage breaks
-ties within a match kind; it never outranks a stronger match.
-`settings.rs` reads System Settings panes and their sections (51 panes, 711
-items, deep links verified). `places.rs` contributes existing well-known
-folders such as Downloads, Trash, Applications, and Utilities. `candidate.rs`
-turns 127 apps, 13 places, and 606 settings into one list of destinations with
-IDs, subtitles, and actions;
-`files.rs` walks the home folder and iCloud Drive with Finder's visibility
-rules and a user-editable exclusion list (~5-23k entries here, 0.05-0.3 s).
-Files and folders need a strong match on their own name, with folder words and
-the extension as support (`search::file_tier`). Results are the top `limit` by
-`search::rank`, chosen without a full sort, with files capped at 40% of the list
-unless nothing else fills it. Search ranks apps, places, settings, and files
-together by tier (title match kind interleaved with Apple's keyword matches),
-then usage, then destination prior (app > place > pane > section). Apps carry
-Finder's display names and a precomputed matching key (folded,
-split on whitespace and camelCase). Measured: ~90 ms to index 127 apps and 606
-settings destinations, ~75-90 us per query (keywords scanned linearly; an
-inverted index waits for file search).
+As of 2026-10-13. `milky-core` is the engine, `milky-ffi` exposes it to Swift
+through five C functions (ABI 4, JSON messages; DECISIONS 2026-09-13 and later
+contract entries), and `milky-cli` (`milky`) drives it headlessly: one-shot or
+interactive queries, `--settings`, `--files`. 230 core and 8 FFI tests.
+
+Sources, each turned into candidates by `candidate.rs` (one per destination,
+with an ID, title, subtitle, and action):
+
+- `apps.rs`: app bundles in `/Applications`, `/System/Applications`,
+  `~/Applications` and one level below, named as Finder names them
+  (`launch_services.rs`, the one home of the CoreFoundation calls).
+- `places.rs`: 13 well-known folders (Downloads, Trash, Applications,
+  iCloud Drive, ...), with aliases that match but are never shown.
+- `settings.rs`: System Settings panes and their sections with Apple's
+  keywords, opened by deep link.
+- `files.rs`: the home folder and iCloud Drive as Finder shows them, minus
+  generated folders and the user's `exclusions.txt`.
+
+Here: 127 apps, 13 places, 606 settings, ~5k files and folders. The engine
+builds all of it in `Engine::new` (0.11 s warm, 0.43 s cold) and holds it in
+memory; the file index does not refresh until the engine is rebuilt.
+
+A query (`search.rs`, ~0.2-0.35 ms here):
+
+1. `normalize_query` folds case, accents, and dashes and turns other
+   punctuation into spaces; names go through the same function.
+2. Each candidate is matched (`matching.rs`): titles by an ordered
+   `MatchKind` ladder over precomputed keys (words split at spaces,
+   punctuation, letter/digit and camelCase boundaries), settings also by
+   keywords, files by `file_tier` (a strong match on the name, folders and the
+   extension only supporting it; the whole name or a pasted path is exact).
+3. Hits are ordered by `rank`: standing (the tier, two steps lower for
+   settings sections and files), then usage (`usage.rs`, decayed selection
+   counts), then prior (app > place > pane > section > folder > file), then
+   recency for files.
+4. `select_best` keeps the top `limit` without a full sort, at most 40% files
+   unless nothing else fills the list; `with_typed_folder` adds the folder the
+   query named on the way to a file.
+
+Selections arrive as `record_selection` messages and are appended to
+`events.jsonl` and folded into `usage.json` (`events.rs`, `usage.rs`,
+`storage.rs`) in `~/Library/Application Support/Milky/`.
 
 ## Runtime components
 
@@ -299,15 +315,19 @@ This constraint is intentional and should influence model size, inference strate
 
 ## Open architectural decisions
 
-Still to decide:
+Decided so far: the selection event schema (DECISIONS 2026-10-08), the
+filesystem discovery policy (2026-10-08), and app, places, and System Settings
+sources. Still to decide:
 
-- Swift ↔ Rust event message schema (impressions, selections, action outcomes);
-- exact lexical index implementation;
+- how the file index is built off the startup path and kept fresh (threads,
+  FSEvents), and whether it is persisted;
+- impressions and dismissals in the event log (only selections today);
+- exact lexical index implementation for document contents (an inverted
+  index; names are scanned linearly at ~5k);
 - exact vector index implementation;
 - local inference runtime;
 - initial text embedding model;
 - initial image embedding model;
 - document parsers and supported formats;
-- filesystem discovery/indexing policy;
-- ranking feature schema;
-- app/system-action source implementation.
+- ranking feature schema and learned ranker (hand-set order today);
+- system actions (sleep, lock, empty trash).

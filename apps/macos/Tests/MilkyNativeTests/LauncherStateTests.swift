@@ -282,18 +282,31 @@ private actor SelectionRecorder: SelectionEventRecording {
         try await waitFor { !state.isSearching }
     }
 
-    func testDismissalInvalidatesPendingWorkAndReinvocationResets() async throws {
+    func testReinvocationPreservesQueryResultsAndSelectionWhileRefreshingRanking() async throws {
         let provider = ControlledSearch()
         let state = LauncherState(provider: provider, opener: RecordingOpener())
-        state.setQuery("old")
-        try await waitFor { await provider.contains("old") }
+        state.setQuery("idle")
+        try await waitFor { await provider.contains("idle") }
+        await provider.succeed("idle", [first, second])
+        try await waitFor { !state.isSearching }
+        state.select(second.id)
+
         state.dismiss()
-        state.beginSession()
-        await provider.succeed("old", [first])
-        try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(state.query, "")
-        XCTAssertTrue(state.results.isEmpty)
+        XCTAssertEqual(state.query, "idle")
+        XCTAssertEqual(state.results, [first, second])
+
+        let queryToSelect = state.beginSession()
+        XCTAssertEqual(queryToSelect, "idle", "The native field should select the preserved query for replacement")
+        XCTAssertTrue(state.isSearching)
+        XCTAssertEqual(state.results, [first, second], "Keep prior results visible while the query refreshes")
+        XCTAssertEqual(state.selectedID, second.id, "Preserve a selected stable result ID across refresh")
         XCTAssertFalse(state.canOpen)
+        try await waitFor { await provider.contains("idle") }
+        await provider.succeed("idle", [second, first])
+        try await waitFor { !state.isSearching }
+
+        XCTAssertEqual(state.results, [second, first], "Refresh the core ranking when the panel reopens")
+        XCTAssertEqual(state.selectedID, second.id)
         XCTAssertFalse(state.showsProgress)
     }
 }

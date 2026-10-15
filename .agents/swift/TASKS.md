@@ -46,6 +46,12 @@ quality follow-ups; they do not block the next product capability.
       real open attempt; fixtures remain excluded from persistence.
 - [x] Choose the hybrid mixed-result panel; add Quick Look file inspection and
       a keyboard-accessible native action menu from existing URLs.
+- [x] Record Reveal and Copy choices through `record_selection`, and report
+      recorder failures to the local usage log without blocking action feedback
+      (core request, 2026-10-13).
+- [x] Preserve the previous query/results when reopening, select the query for
+      immediate replacement, and refresh Rust ranking without losing a still
+      available selected result (2026-10-13).
 - [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
       behavior; record only concrete failures in ISSUES.md.
 - [ ] Add previews and secondary actions when a core result type supplies them.

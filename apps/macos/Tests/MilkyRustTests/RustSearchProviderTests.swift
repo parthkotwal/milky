@@ -153,6 +153,8 @@ import XCTest
 
     func testSelectionAcknowledgementAndErrorsAreValidated() throws {
         XCTAssertNoThrow(try RustSearchProvider.validateRecorded(Data(#"{"kind":"recorded"}"#.utf8)))
+        let rejected = BridgeError.engine(reason: "bad_request", message: "failed at /Users/person/private/path")
+        XCTAssertEqual(rejected.safeDiagnostic, "bad_request")
         XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"error","reason":"bad_request","message":"selected must be shown"}"#.utf8))) { error in
             guard case BridgeError.engine(let reason, _) = error else { return XCTFail("Expected engine error") }
             XCTAssertEqual(reason, "bad_request")

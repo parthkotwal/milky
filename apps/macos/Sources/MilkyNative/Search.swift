@@ -80,6 +80,11 @@ public protocol SelectionEventRecording: Sendable {
     func recordSelection(_ event: SelectionEvent) async throws
 }
 
+/// A short diagnostic safe for local logs. It must not include a query or destination.
+public protocol SafeDiagnosticError: Error {
+    var safeDiagnostic: String { get }
+}
+
 /// Explicit development data. This is not app discovery or production ranking.
 public struct FixtureSearchProvider: SearchProvider {
     public init() {}

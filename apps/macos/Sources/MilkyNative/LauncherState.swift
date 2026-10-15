@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 @MainActor
 public protocol AppOpening {
@@ -15,6 +16,7 @@ public extension AppOpening {
 
 @MainActor @Observable
 public final class LauncherState {
+    private static let usageLogger = Logger(subsystem: "com.milky", category: "usage")
     public private(set) var query = ""
     public private(set) var results: [AppResult] = []
     public private(set) var selectedID: String?
@@ -223,17 +225,21 @@ public final class LauncherState {
         case .inspect:
             inspectedResultID = result.id
         case .reveal, .copyLocation:
+            let eventQuery = query
+            let shownIDs = results.map(\.id)
             isOpening = true
             errorMessage = nil
             statusMessage = nil
             let token = generation
             do {
                 try await opener.performSecondary(action, on: result)
+                recordSelection(query: eventQuery, shown: shownIDs, selected: result.id, outcome: .opened)
                 if active, generation == token {
                     if action == .reveal { onOpened?() }
                     else { statusMessage = result.kind == .setting ? "Link copied" : "Path copied" }
                 }
             } catch {
+                recordSelection(query: eventQuery, shown: shownIDs, selected: result.id, outcome: .failed)
                 if active, generation == token {
                     errorMessage = "Couldn’t \(action.title(for: result).lowercased()). \(error.localizedDescription)"
                 }
@@ -252,7 +258,15 @@ public final class LauncherState {
         guard let eventRecorder else { return }
         let event = SelectionEvent(query: query, shown: shown, selected: selected, outcome: outcome)
         // Durable logging is deliberately off the launcher's critical path.
-        Task { try? await eventRecorder.recordSelection(event) }
+        Task { [eventRecorder] in
+            do {
+                try await eventRecorder.recordSelection(event)
+            } catch {
+                let diagnostic = (error as? any SafeDiagnosticError)?.safeDiagnostic
+                    ?? String(reflecting: type(of: error))
+                Self.usageLogger.error("Failed to record result selection: \(diagnostic, privacy: .public)")
+            }
+        }
     }
 
     public func dismiss() {
@@ -263,12 +277,17 @@ public final class LauncherState {
         isSearching = false; showsProgress = false
     }
 
-    public func beginSession() {
+    @discardableResult
+    public func beginSession() -> String? {
         active = true
-        query = ""; results = []; selectedID = nil; errorMessage = nil; statusMessage = nil
+        errorMessage = nil
+        statusMessage = nil
         closeOverlays()
         generation += 1
         request?.cancel(); progress?.cancel()
         isSearching = false; showsProgress = false
+        let queryToSelect = query.isEmpty ? nil : query
+        if queryToSelect != nil { search(resetSelection: false) }
+        return queryToSelect
     }
 }

@@ -6,12 +6,25 @@ private struct PanelSearch: SearchProvider {
     func search(query: String) async throws -> [AppResult] { results }
 }
 
+private actor PanelSelectionRecorder: SelectionEventRecording {
+    private(set) var events: [SelectionEvent] = []
+    var fails = false
+    func recordSelection(_ event: SelectionEvent) async throws {
+        events.append(event)
+        if fails { throw FixtureError.unavailable }
+    }
+    func setFails(_ value: Bool) { fails = value }
+    func recordedEvents() -> [SelectionEvent] { events }
+}
+
 @MainActor private final class PanelOpener: AppOpening {
     var opened: [String] = []
     var secondary: [(ResultMenuAction, String)] = []
+    var secondaryFails = false
     func open(_ result: AppResult) async throws { opened.append(result.id) }
     func performSecondary(_ action: ResultMenuAction, on result: AppResult) async throws {
         secondary.append((action, result.id))
+        if secondaryFails { throw FixtureError.unavailable }
     }
 }
 
@@ -80,5 +93,58 @@ private struct PanelSearch: SearchProvider {
         XCTAssertEqual(state.actionMenuResultID, setting.id)
         XCTAssertTrue(state.closeOverlay())
         XCTAssertFalse(state.closeOverlay())
+    }
+
+    func testSecondaryResultActionsRecordSelectionAndOutcome() async throws {
+        let opener = PanelOpener()
+        let recorder = PanelSelectionRecorder()
+        let state = LauncherState(provider: PanelSearch(results: [file, setting]), opener: opener,
+                                  eventRecorder: recorder)
+        state.setQuery("report")
+        try await waitForSearch(state)
+
+        state.toggleActionMenu()
+        await state.chooseMenuAction(.reveal)
+        for _ in 0..<1000 {
+            if await recorder.recordedEvents().count == 1 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+
+        opener.secondaryFails = true
+        state.toggleActionMenu()
+        await state.chooseMenuAction(.copyLocation)
+        for _ in 0..<1000 {
+            if await recorder.recordedEvents().count == 2 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+
+        let events = await recorder.recordedEvents()
+        XCTAssertEqual(events, [
+            SelectionEvent(query: "report", shown: [file.id, setting.id], selected: file.id, outcome: .opened),
+            SelectionEvent(query: "report", shown: [file.id, setting.id], selected: file.id, outcome: .failed),
+        ])
+        XCTAssertNotNil(state.errorMessage)
+    }
+
+    func testSelectionRecorderFailureDoesNotBreakActionFeedback() async throws {
+        let opener = PanelOpener()
+        let recorder = PanelSelectionRecorder()
+        await recorder.setFails(true)
+        let state = LauncherState(provider: PanelSearch(results: [setting]), opener: opener,
+                                  eventRecorder: recorder)
+        state.setQuery("wifi")
+        try await waitForSearch(state)
+
+        state.toggleActionMenu()
+        await state.chooseMenuAction(.copyLocation)
+        for _ in 0..<1000 {
+            if await recorder.recordedEvents().count == 1 { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+
+        XCTAssertEqual(state.statusMessage, "Link copied")
+        XCTAssertNil(state.errorMessage)
+        let eventCount = await recorder.recordedEvents().count
+        XCTAssertEqual(eventCount, 1)
     }
 }

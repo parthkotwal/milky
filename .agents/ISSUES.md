@@ -280,3 +280,103 @@ Lesson:
 When collapsing several records into one, carry every field across, not just
 the one that decided the merge. Found by dumping the real data before designing
 ranking; do that first.
+
+---
+
+## 2026-10-09 — Tab completion and pasted paths found nothing
+
+Status: resolved
+Area: rust-core
+
+Symptom:
+Completing the query to a result's title (`Parth Kotwal Google.pdf`) or
+pasting `desktop/customized/Parth Kotwal Google.pdf` returned no matches,
+although the file was indexed.
+
+Cause:
+Names were split into words at punctuation (since the file-name work), but
+queries were not: `google.pdf` stayed one query word that was neither a name
+word nor the extension.
+
+Fix / workaround:
+`normalize_query` turns punctuation into spaces for queries and names alike;
+the whole file name, or a path ending in it, counts as an exact match.
+
+Lesson:
+Anything that splits or folds names must run on queries through the same
+function. Two tokenizers drift.
+
+---
+
+## 2026-10-09 — A path check made one-letter queries 50x slower
+
+Status: resolved
+Area: rust-core
+
+Symptom:
+After adding pasted-path matching, `c` took 15 ms (was 0.3 ms) and the FFI
+concurrency test took 168 s (was ~3 s). All tests still passed.
+
+Cause:
+The path check built strings (`normalize_query` per path suffix) for every
+file that matched at all, thousands for a one-letter query.
+
+Fix / workaround:
+It now runs only when the query ends with the file's whole name, tested by a
+string comparison that allocates nothing.
+
+Lesson:
+Per-candidate work on the query path must not allocate. Time `a` and `c` in
+the CLI after any matching change; a jump in the FFI concurrency test's
+runtime is the earliest warning.
+
+---
+
+## 2026-10-12 — `chrome` put a folder above Google Chrome
+
+Status: resolved
+Area: rust-core
+
+Symptom:
+`chrome` ranked "Chrome Apps.localized" (in `~/Applications`) above Google
+Chrome. Typing a later word of an app's name, a file beat the app in 23 of 67
+cases (`word` -> Word.java).
+
+Cause:
+Two things. `.localized` is a macOS convention: Finder shows that folder as
+"Chrome Apps", and we showed the raw name. And match strength came first, so a
+folder starting with the word beat an app containing it as a second word.
+
+Fix / workaround:
+Finder names for `.localized` folders; settings sections and files rank two
+steps below apps, places, and panes (DECISIONS 2026-10-12).
+
+Lesson:
+Check ranking changes against app known-item queries (each later word of each
+app's name), not only against the query that prompted the change.
+
+---
+
+## 2026-10-13 — Few selections in the log after a week of daily use
+
+Status: resolved (Swift owner, 2026-10-13)
+Area: swift-app
+
+Symptom:
+15 selections in `events.jsonl` over six days of using Milky as the default
+launcher.
+
+Cause:
+Partly unknown. Known gaps: Reveal in Finder and Copy Path record no
+selection, and `recordSelection` drops any failure silently (`try?`), so a
+rejected event leaves no trace.
+
+Fix / workaround:
+Swift records successful and failed Reveal and Copy actions through the existing
+selection message. Rejected event writes are reported in the local `com.milky`
+usage log; queries and result IDs are omitted. See `.agents/swift/DECISIONS.md`
+and `.agents/swift/INTEGRATION.md` (2026-10-13).
+
+Lesson:
+Learned ranking is only as good as the log. Count events against real use
+before building on them.

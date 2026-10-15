@@ -727,3 +727,47 @@ Consequences:
   longer lift a section or file above an app of equal raw strength
   (`usage_does_not_lift_the_tail_over_the_head`). Learned ranking from
   selections is the intended replacement (TASKS).
+
+---
+
+## 2026-10-08 — System Settings as a source: panes, sections, keywords, deep links
+
+Status: implemented. Recorded 2026-10-13 from the working notes in TASKS,
+where it lived until then.
+
+Decision:
+
+- Panes: every extension in `/System/Library/ExtensionKit/Extensions` (and
+  System Settings' own PlugIns) with extension point
+  `com.apple.Settings.extension.ui`; 51 on macOS 26. Some declare
+  `presentsInSidebar: false` and are still searchable.
+- Pane names, first that answers: the hardware-dependent sidebar key (Battery
+  vs Energy, power source read via IOKit; Touch ID and Apple Intelligence
+  assumed present), else `InfoPlist.loctable` (`en`), else `Info.plist`, else
+  a cleaned identifier. Neither `Info.plist` nor LaunchServices alone is right
+  for all panes.
+- Sections: each pane's `en.lproj/<name>.searchTerms` plist, anchor ->
+  `localizableStrings` entries with `title` and comma-separated `index`
+  keywords (711 entries, 3,520 keywords). Entries sharing an anchor are one
+  destination (606 settings results in all).
+- Opening: `x-apple.systempreferences:<pane bundle id>` and
+  `...:<pane bundle id>?<anchor>`. Verified on screen 2026-10-08 for
+  `Privacy_Camera`, `nightShiftSection`, Wi-Fi `Advanced`; some sections open
+  as a sheet, and a link sent while a sheet is closing can be ignored.
+
+Why:
+
+Spotlight finds "Bluetooth", "Night Shift", and "Camera" (privacy) in System
+Settings; the user called this critical for daily use, ahead of files. The
+search-terms files are what System Settings' own search uses, so their anchors
+are exactly the deep-link anchors.
+
+Consequences:
+
+- Discovery costs ~40 ms at engine start (Info.plist scan 16 ms, loctables
+  19 ms, search terms 6 ms); cacheable by OS version if it ever matters.
+- English only. "AutoFill & Passwords" (under General) is in no search-terms
+  file; General itself has no items; panes hidden by hardware (Mouse without a
+  mouse, Classroom) are still listed. Accessibility is 342 of 711 entries,
+  which is why sections rank as the long tail (DECISIONS 2026-10-12).
+- Apple writes "Wi‑Fi" with U+2011, so dashes are folded away in matching.

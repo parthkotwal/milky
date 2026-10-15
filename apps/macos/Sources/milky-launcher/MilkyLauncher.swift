@@ -187,32 +187,42 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
 
     private func show() {
         guard !terminating else { return }
+        let queryToSelect: String?
         if !session.isPresented {
             let front = NSWorkspace.shared.frontmostApplication
             let previous = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? lastExternalPID : front?.processIdentifier
             session.begin(previousPID: previous)
-            state.beginSession()
+            queryToSelect = state.beginSession()
             repositionForDisplayChange()
+        } else {
+            queryToSelect = nil
         }
         record("show")
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.contentView?.layoutSubtreeIfNeeded()
-        focusSearch()
+        let isFocused = focusSearch(selecting: queryToSelect)
         // SwiftUI may attach its NSTextField after the initial hosting layout.
         let token = session.generation
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.session.generation == token else { return }
-            self.focusSearch()
+        if !isFocused {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.session.generation == token else { return }
+                self.focusSearch(selecting: queryToSelect)
+            }
         }
     }
 
-    private func focusSearch() {
-        guard session.isPresented, panel.isVisible, panel.isKeyWindow else { return }
-        if let field = findField(panel.contentView), field.currentEditor() == nil {
-            panel.makeFirstResponder(field)
+    @discardableResult
+    private func focusSearch(selecting queryToSelect: String? = nil) -> Bool {
+        guard session.isPresented, panel.isVisible, panel.isKeyWindow,
+              let field = findField(panel.contentView) else { return false }
+        if field.currentEditor() == nil { panel.makeFirstResponder(field) }
+        guard let editor = field.currentEditor() as? NSTextView else { return false }
+        if let queryToSelect, !queryToSelect.isEmpty, field.stringValue == queryToSelect {
+            editor.setSelectedRange(NSRange(location: 0, length: (queryToSelect as NSString).length))
         }
         record("search-focused")
+        return true
     }
 
     private func findField(_ view: NSView?) -> NSTextField? {

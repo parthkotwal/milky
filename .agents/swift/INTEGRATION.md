@@ -103,6 +103,30 @@ learning-first). Swift adapter and linking — Swift owner.
   title). Additive, ABI stays 3; Swift ignores `match_kind`. Verified with
   `scripts/build.sh test`: 22 Swift tests pass.
 
+## Core request — 2026-10-13 (implemented)
+
+- Record a selection for every action taken on a result, not only Open:
+  Reveal in Finder and Copy Path are choices of that result too. Use the same
+  `record_selection` message; no contract change.
+- Do not drop a failed `record_selection` silently (`try? await` in
+  `LauncherState.recordSelection`): log it (lifecycle diagnostics are fine),
+  so a `bad_request` shows up instead of vanishing.
+- Why: `events.jsonl` holds 15 selections after six days of daily use, and
+  learned ranking depends on this log (shared TASKS, ISSUES 2026-10-13).
+- The existing `opened` / `failed` outcome now means the result action
+  succeeded / failed, including Reveal and Copy; the request keeps the wire
+  contract unchanged. Recording remains asynchronous and never delays the UI.
+- Recording errors go to the `com.milky` `usage` unified-log category. Bridge
+  errors log only their safe reason (such as `bad_request`), never the message,
+  query, or destination ID.
+
+## Native invocation continuity — 2026-10-13
+
+The native session retains the last query and displayed results after dismissal.
+Reopening selects the saved query text and refreshes it through the current Rust
+provider; old rows remain visible during the refresh, and selection follows the
+same stable ID if it is still present. This changes no Rust or FFI contract.
+
 ## Agreed integration
 
 ### Contract v3 — agreed and wired 2026-10-08
@@ -231,10 +255,8 @@ items. Swift uses these existing values for Quick Look file inspection, Open,
 Reveal in Finder, and Copy Path or Link. It does not request new discovery or
 ranking fields and does not reorder the response. The full bridge suite passes.
 
-Pending core decision, not an implemented contract: `record_selection` has only
-`opened` and `failed` outcomes for the primary action. Swift therefore records
-only primary Open; it does not describe Reveal or Copy as a launch. If action
-usage should influence ranking or appear in history, agree on an action-aware
-event schema with the core owner before sending those events. Preview snippets
-or extracted document text would likewise require future core result metadata;
-Quick Look file inspection does not depend on them.
+At the time, Swift recorded only primary Open because the event's `opened` and
+`failed` outcomes were interpreted as launch outcomes. Core requested broader
+selection tracking on 2026-10-13 using the unchanged message; see the implemented
+request above. Preview snippets or extracted document text still require future
+core result metadata; Quick Look file inspection does not depend on them.

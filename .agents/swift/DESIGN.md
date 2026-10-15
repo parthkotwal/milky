@@ -68,6 +68,10 @@ match scores, ABI details, or debugging controls in the normal search experience
   should not unexpectedly undo an intentional keyboard selection.
 - On dismissal, return focus to the previous app when appropriate. On action,
   activate the target app and avoid restoring focus over it.
+- On the next invocation, retain the prior query and result rows, select the
+  query text for quick replacement, and refresh that same query through Rust.
+  Keep old rows visible until refreshed ranking arrives; preserve selection by
+  stable result ID when it remains present.
 - A running app should offer switching/activation behavior. A closed app should
   open. Show actionable feedback for a failed operation.
 - Start with the primary action. Secondary actions and previews arrive when
