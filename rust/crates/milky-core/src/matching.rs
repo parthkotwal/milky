@@ -216,7 +216,7 @@ pub fn is_separator(c: char) -> bool {
 /// `token` split at punctuation and symbols, empty pieces dropped:
 /// `final-report_v2.pdf` -> `final`, `report`, `v2`, `pdf`; `(Head` -> `Head`.
 /// Accents written as separate combining marks stay with their letter.
-fn punctuation_pieces(token: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn punctuation_pieces(token: &str) -> impl Iterator<Item = &str> {
     token
         .split(is_separator)
         .filter(|piece| !piece.is_empty())
@@ -225,7 +225,7 @@ fn punctuation_pieces(token: &str) -> impl Iterator<Item = &str> {
 /// One punctuation-free piece split between letters and digits, then at
 /// camelCase boundaries: `cse332` -> `cse`, `332`; `iPhone15` -> `i`, `Phone`,
 /// `15`.
-fn piece_parts(piece: &str) -> Vec<&str> {
+pub(crate) fn piece_parts(piece: &str) -> Vec<&str> {
     digit_parts(piece)
         .into_iter()
         .flat_map(camel_parts)

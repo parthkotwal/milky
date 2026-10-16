@@ -8,6 +8,13 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 ## Now
 
+- [ ] Document search (DECISIONS 2026-10-16): extraction with Apple's
+      engines into a text cache, our own inverted index with BM25 and prefix
+      match, content results ranked below name matches (at most 3, all words
+      required) with snippets; OCR last; FTS5 as a test oracle. Later stage:
+      a compact memory-mapped on-disk index.
+      D1 extraction and text cache, D2 word splitting: done 2026-10-16
+      (warm rebuild input 1.0 s). Next: D3 inverted index (user).
 - [ ] Interaction logging, phase 1 (DECISIONS 2026-10-15). Rust done
       2026-10-16: SQLite store, `search_id`, impressions with features,
       `record_events`, `events.jsonl` imported, `milky --log`. Swift (in
@@ -63,8 +70,6 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 - [ ] Tell the user about unreadable folders. `Walk::unreadable` lists folders
       macOS privacy settings blocked, but the engine does not report them, so
       a denied Desktop/Documents/Downloads prompt silently hides files.
-- [ ] Document text extraction: search inside files. This is where an inverted
-      index earns its place (millions of words, not ~5k names).
 - [ ] Screenshot OCR; image embedding index; semantic text retrieval. Benchmark
       local text and image embedding models and choose an inference runtime
       first.

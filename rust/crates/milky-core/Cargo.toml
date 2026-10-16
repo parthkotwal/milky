@@ -19,3 +19,9 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+# Document text from Apple's own engines: PDFKit for PDFs, AppKit's document
+# readers for Word, RTF, and OpenDocument (DECISIONS 2026-10-16).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSURL", "NSString", "NSAttributedString", "NSDictionary", "NSError"] }
+objc2-pdf-kit = { version = "0.3", features = ["PDFDocument"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAttributedString"] }

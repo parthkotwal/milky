@@ -939,3 +939,84 @@ Implementation notes, phases 2 and 3 (2026-10-16), for the entry above:
   usage scores included), `--export PATH` (`VACUUM INTO`: Python reads the
   copy with its own `sqlite3` module, so no other export format is needed),
   `--forget-history all|DAYS` (all also resets usage scores).
+
+---
+
+## 2026-10-16 — Document search: our own inverted index over extracted text
+
+Status: agreed; being planned into beats (TASKS, Now).
+
+Decision:
+
+- Index the text inside documents (PDF, Word/RTF/ODT, Markdown, text,
+  LaTeX) and code. Leave out data formats (`.json`, `.csv`, `.html`) by
+  default. A per-file cap on text read (1 MB).
+- Extract with Apple's engines from Rust: PDFKit (`objc2-pdf-kit`) and
+  AppKit's document readers (`objc2-app-kit`); read plain text directly.
+  OCR (Vision) for scanned PDFs and images is the last beat of this feature.
+- Cache extracted text in SQLite (`content.sqlite3`, a rebuildable cache, not
+  history), keyed by path, modified date, and size; re-extract only changed
+  files; the live indexer drives it, in a low-priority background queue.
+- The index is ours: an inverted index (word -> documents) built in memory
+  from the cache, living inside the `Index` snapshot, split into words with
+  the same rules as names, scored with BM25, prefix match on the last query
+  word. SQLite FTS5 is used only in tests, as an oracle for the same queries.
+  A compact memory-mapped on-disk format is a later stage.
+- Ranking: a content-only match ranks below every name match; at most 3 per
+  result list; every query word must occur; within content matches, BM25,
+  recency, last opened. Each content result carries a `snippet` (additive
+  wire field) the launcher shows under the title.
+
+Why:
+
+Measured 2026-10-16: 256 PDFs (1,624 pages) hold only ~2M characters, 56 are
+scans; PDFKit extracts all in 28.5 s once. Documents and code are ~50 MB of
+text; data files would triple it and are mostly datasets. FTS5 over the 50 MB:
+91 MB index, ~1 min build, 0.2-2 ms queries, so a library is not needed for
+speed at this scale, and our own index fits better: it lives in the immutable
+snapshot (no SQL or locks per keystroke), shares the name tokenizer, exposes
+per-term statistics as ranking features, and can later replace the linear
+name scan. Vision OCR measured at 0.05-0.07 s per image. The user wants
+justified from-scratch components; this is the core of a search engine.
+
+Consequences:
+
+- More code to get right; the FTS5 oracle tests guard it.
+- Startup rebuilds the index from cached text in the background until the
+  on-disk format exists.
+
+Refinements agreed 2026-10-16, measured on the user's files after deleting
+`Projects/bondo` and leaving out data files, for the entry above:
+
+- Text to index: 16.6 MB in 1,249 files (documents and code) plus ~2 MB of
+  PDF text; 321,000 distinct words; 2.76M occurrences; 670,000 (word, file)
+  pairs (4.1 occurrences per pair).
+- Positions are stored (phrases, proximity, snippet placement): an estimated
+  ~6 MB compressed against ~2 MB for counts only; ~30-40 MB in RAM for the
+  first in-memory version.
+- The text cache holds only text that is expensive to extract again (PDF,
+  Word, OCR; ~3 MB). Plain text and code are re-read from the files.
+- The on-disk index format is not built by assumption: build stage 1,
+  measure the startup rebuild, and build the format once that passes ~1 s.
+  At this size a whole-file rewrite (temp file, then rename) costs a few ms
+  (SSD writes ~2-4.7 GB/s), so segments and merging (LSM) are not needed.
+- Beats: D1 extraction and cache, D2 document words, D5 ranking, snippets,
+  wire, FTS5 oracle (Claude); D3 the inverted index, D4 queries with BM25 and
+  phrases, D6 OCR (user).
+
+D1 and D2 implemented 2026-10-16 (`extract.rs`, `textcache.rs`, `terms.rs`,
+`milky --extract`), measured on the user's files:
+
+- 1,554 indexable files: 1,472 with text (20.0M characters, 4.37M word
+  occurrences), 82 without (scans and empty files, remembered as such).
+- Cold, first run: 24.8 s (PDFs 17.3 s, Word 2.6 s, plain 2.0 s, word
+  splitting 3.0 s). Warm, from the cache: 1.0 s, of which splitting 0.82 s.
+- Text cache: 259 entries, 3.3 MB, as estimated.
+- Word splitting was first 3.0 s warm: a duplicate check scanned all of a
+  token's parts per joined form, quadratic on minified code (one token of
+  thousands of pieces). Checking only the one case where a duplicate can occur
+  made it linear. An ASCII fast path for folding helped little.
+- PDFKit and AppKit run on a background thread inside an autorelease pool.
+  `libmilky_ffi.a` now also links PDFKit, CoreGraphics, AppKit, Foundation,
+  and `objc` (module map updated; 39 Swift tests pass).
+

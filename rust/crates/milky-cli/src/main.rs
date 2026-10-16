@@ -30,6 +30,8 @@ USAGE:
     milky --watch             keep the engine running and print each index
                               update as files change (Ctrl-C to stop)
     milky --log               what the event store holds, and recent sessions
+    milky --extract           extract and word-split every indexable document
+                              (fills the text cache); report counts and timing
     milky --pause-history     stop recording use (searches still work)
     milky --resume-history    start recording again
     milky --export PATH       write a consistent copy of the event store
@@ -60,6 +62,10 @@ fn main() -> ExitCode {
 
     if options.files {
         return list_files();
+    }
+
+    if options.extract {
+        return extract_all();
     }
 
     if options.settings {
@@ -139,6 +145,7 @@ struct Options {
     count: bool,
     settings: bool,
     files: bool,
+    extract: bool,
     watch: bool,
     log: bool,
     history: Option<History>,
@@ -160,6 +167,7 @@ impl Options {
         let mut help = false;
         let mut settings = false;
         let mut files = false;
+        let mut extract = false;
         let mut watch = false;
         let mut log = false;
         let mut history = None;
@@ -180,6 +188,7 @@ impl Options {
                 "--count" => count = true,
                 "--settings" => settings = true,
                 "--files" => files = true,
+                "--extract" => extract = true,
                 "--watch" => watch = true,
                 "--log" => log = true,
                 "--pause-history" => history = Some(History::Pause),
@@ -217,6 +226,7 @@ impl Options {
             count,
             settings,
             files,
+            extract,
             watch,
             log,
             history,
@@ -475,4 +485,64 @@ fn change_history(engine: &Engine, history: History) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Extract and word-split every indexable document under the file roots, the
+/// way document search will at startup, and report what it cost.
+fn extract_all() -> ExitCode {
+    use milky_core::extract::{TextKind, text_kind};
+    use milky_core::textcache::{self, TextCache};
+
+    let Some(home) = std::env::home_dir() else {
+        eprintln!("no home directory");
+        return ExitCode::FAILURE;
+    };
+    let cache_path = milky_core::engine::data_dir().join(textcache::FILE_NAME);
+    let mut cache = match TextCache::open(&cache_path) {
+        Ok(cache) => cache,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let walk = files::discover_files(&home, &milky_core::engine::user_exclusions(&home));
+    let started = Instant::now();
+    let (mut documents, mut empty, mut chars, mut occurrences) = (0usize, 0usize, 0usize, 0usize);
+    let mut by_kind: HashMap<&str, (usize, Duration)> = HashMap::new();
+    let mut tokenizing = Duration::ZERO;
+    for entry in walk.entries.iter().filter(|entry| !entry.is_folder) {
+        let Some(kind) = text_kind(&entry.path) else { continue };
+        let one = Instant::now();
+        let text = textcache::document_text(&entry.path, &mut cache);
+        let slot = by_kind.entry(match kind {
+            TextKind::Plain => "plain",
+            TextKind::Pdf => "pdf",
+            TextKind::Rich => "rich",
+        }).or_default();
+        slot.0 += 1;
+        slot.1 += one.elapsed();
+        let Some(text) = text else {
+            empty += 1;
+            continue;
+        };
+        documents += 1;
+        chars += text.chars().count();
+        let split = Instant::now();
+        occurrences += milky_core::terms::occurrences(&text).len();
+        tokenizing += split.elapsed();
+    }
+    println!(
+        "{documents} documents with text ({empty} without), {:.1} M characters, {:.2} M word occurrences, in {:.1?}",
+        chars as f64 / 1e6,
+        occurrences as f64 / 1e6,
+        started.elapsed()
+    );
+    for (kind, (count, time)) in &by_kind {
+        println!("  {kind:<6} {count:>5} files  {time:.1?}");
+    }
+    println!("  splitting into words: {tokenizing:.1?}");
+    if let Ok((entries, bytes)) = cache.size() {
+        println!("text cache: {entries} entries, {:.1} MB of text  ({})", bytes as f64 / 1e6, cache_path.display());
+    }
+    ExitCode::SUCCESS
 }

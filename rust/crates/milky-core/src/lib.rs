@@ -6,14 +6,18 @@ pub mod apps;
 pub mod candidate;
 pub mod engine;
 pub mod events;
+pub mod extract;
 pub mod files;
 pub mod indexer;
+pub mod invindex;
 pub mod launch_services;
 pub mod matching;
 pub mod places;
 pub mod search;
 pub mod settings;
 pub mod storage;
+pub mod terms;
+pub mod textcache;
 pub mod store;
 pub mod usage;
 

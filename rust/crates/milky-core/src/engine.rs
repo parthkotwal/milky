@@ -169,6 +169,15 @@ pub struct Engine {
 /// to another folder.
 pub const DATA_DIR_VARIABLE: &str = "MILKY_DATA_DIR";
 
+/// Where Milky keeps its files: `$MILKY_DATA_DIR` if set, else
+/// `~/Library/Application Support/Milky`.
+pub fn data_dir() -> PathBuf {
+    std::env::var_os(DATA_DIR_VARIABLE)
+        .map(PathBuf::from)
+        .or_else(|| storage::data_dir().ok())
+        .unwrap_or_else(|| std::env::temp_dir().join("Milky"))
+}
+
 /// How many candidates beyond the visible results each search remembers for
 /// learning: the alternatives a learned ranker chooses between.
 pub const POOL_SIZE: usize = 50;
@@ -192,11 +201,7 @@ impl Engine {
     /// `$MILKY_DATA_DIR` if set: tests and experiments must never write to the
     /// real store. The launcher never sets it.
     pub fn new() -> Self {
-        let dir = std::env::var_os(DATA_DIR_VARIABLE)
-            .map(PathBuf::from)
-            .or_else(|| storage::data_dir().ok())
-            .unwrap_or_else(|| std::env::temp_dir().join("Milky"));
-        Self::with_data_dir(&dir)
+        Self::with_data_dir(&data_dir())
     }
 
     pub fn with_data_dir(dir: &Path) -> Self {
