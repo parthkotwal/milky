@@ -1020,3 +1020,32 @@ D1 and D2 implemented 2026-10-16 (`extract.rs`, `textcache.rs`, `terms.rs`,
   `libmilky_ffi.a` now also links PDFKit, CoreGraphics, AppKit, Foundation,
   and `objc` (module map updated; 39 Swift tests pass).
 
+D3 and D4 implemented 2026-10-16 (`invindex.rs`), measured with
+`milky --extract` on the user's files (release build, warm cache):
+
+- Index: 1,473 documents, 425,000 distinct words, 1.0M postings, 4.37M
+  positions. Building it takes 2.2 s wall in all: reading 0.23 s, word
+  splitting 0.92 s, adding to the index 0.25 s.
+- Queries (top 3, every match scored): 1-28 µs for real words and course
+  numbers; 0.5 ms for `the`; 0.7-1.2 ms for one-letter prefixes (`a`, `e`),
+  whose 64 dictionary words match most documents.
+- Memory: the index alone is ~142 MB (peak 261 MB with it, 119 MB without),
+  not the 30-40 MB estimated above. The positions are 17.5 MB; the rest is
+  per-allocation overhead: every posting owns a separate `Vec` of positions
+  (1.0M heap blocks), every word a `String`, plus BTreeMap nodes and `Vec`
+  growth slack. Both thresholds for the compact format are now passed (startup
+  over ~1 s, memory): flat arrays (one positions array, postings as offsets
+  into it, words in one byte buffer) would hold the same index in ~20-35 MB
+  and are the on-disk layout too. Not yet decided how live updates meet an
+  immutable compact index.
+- Query words: only the parts of each query token, never its joined form
+  (documents index both), so `cse332` finds `CSE 332`; the last part is a
+  prefix unless the query ends in a space.
+- BM25 with k1 1.2, b 0.75 and Lucene's non-negative IDF; a prefix scores as
+  one term. Order: a phrase (terms adjacent in query order) first, then score.
+  Each hit carries the snippet position: the first phrase occurrence or the
+  start of the shortest stretch holding every term.
+- Noise seen: the best match for `e` is a minified bundle in a build output
+  folder (`dist/assets/*.js`). Generated code should be left out of content
+  search by a general rule (very long lines, for example), measured first.
+

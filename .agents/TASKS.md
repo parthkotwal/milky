@@ -13,8 +13,11 @@ Keep entries concise. Remove or move completed items when they no longer help fu
       match, content results ranked below name matches (at most 3, all words
       required) with snippets; OCR last; FTS5 as a test oracle. Later stage:
       a compact memory-mapped on-disk index.
-      D1 extraction and text cache, D2 word splitting: done 2026-10-16
-      (warm rebuild input 1.0 s). Next: D3 inverted index (user).
+      D1-D4 done 2026-10-16 (extraction, text cache, word splitting, the
+      inverted index with prefix match, BM25, phrases, top-k). Next: D5
+      (Claude): content worker, search integration, snippets, FTS5 oracle.
+      Measured: index ~142 MB in RAM, 2.2 s to build at startup, so the
+      compact format is due (DECISIONS 2026-10-16, D3/D4 notes).
 - [ ] Interaction logging, phase 1 (DECISIONS 2026-10-15). Rust done
       2026-10-16: SQLite store, `search_id`, impressions with features,
       `record_events`, `events.jsonl` imported, `milky --log`. Swift (in

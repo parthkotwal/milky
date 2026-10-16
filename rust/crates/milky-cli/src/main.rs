@@ -510,6 +510,9 @@ fn extract_all() -> ExitCode {
     let (mut documents, mut empty, mut chars, mut occurrences) = (0usize, 0usize, 0usize, 0usize);
     let mut by_kind: HashMap<&str, (usize, Duration)> = HashMap::new();
     let mut tokenizing = Duration::ZERO;
+    let mut indexing = Duration::ZERO;
+    let mut postings = 0usize;
+    let mut index = milky_core::invindex::InvertedIndex::new();
     for entry in walk.entries.iter().filter(|entry| !entry.is_folder) {
         let Some(kind) = text_kind(&entry.path) else { continue };
         let one = Instant::now();
@@ -528,8 +531,13 @@ fn extract_all() -> ExitCode {
         documents += 1;
         chars += text.chars().count();
         let split = Instant::now();
-        occurrences += milky_core::terms::occurrences(&text).len();
+        let terms = milky_core::terms::document_terms(&text);
         tokenizing += split.elapsed();
+        occurrences += terms.positions.values().map(Vec::len).sum::<usize>();
+        postings += terms.positions.len();
+        let adding = Instant::now();
+        index.add(&entry.path, terms);
+        indexing += adding.elapsed();
     }
     println!(
         "{documents} documents with text ({empty} without), {:.1} M characters, {:.2} M word occurrences, in {:.1?}",
@@ -541,6 +549,26 @@ fn extract_all() -> ExitCode {
         println!("  {kind:<6} {count:>5} files  {time:.1?}");
     }
     println!("  splitting into words: {tokenizing:.1?}");
+    println!(
+        "  inverted index: {indexing:.1?} to add, {} distinct words, {postings} postings",
+        index.word_count()
+    );
+    for query in ["kafka", "attention mechanism", "cse332", "lecture notes", "the", "a", "e", "getuser", "zzzq"] {
+        let terms = milky_core::invindex::query_terms(query);
+        let runs = 20;
+        let timing = Instant::now();
+        let mut hits = Vec::new();
+        for _ in 0..runs {
+            hits = index.search(&terms, 3);
+        }
+        let matched = index.matching_docs(&terms).len();
+        let best = hits.first().and_then(|hit| index.doc(hit.doc)).map(|info| info.path.display().to_string());
+        println!(
+            "  {query:<20} {matched:>5} match  {:>8.2?}/search  best: {}",
+            timing.elapsed() / runs,
+            best.unwrap_or_default()
+        );
+    }
     if let Ok((entries, bytes)) = cache.size() {
         println!("text cache: {entries} entries, {:.1} MB of text  ({})", bytes as f64 / 1e6, cache_path.display());
     }

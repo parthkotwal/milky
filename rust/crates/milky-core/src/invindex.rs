@@ -12,6 +12,7 @@
 //! sweeps their entries out of the lists now and then.
 
 use std::collections::{BTreeMap, HashMap};
+use std::cmp::Ordering;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 
@@ -36,22 +37,29 @@ pub enum QueryTerm {
 }
 
 /// The terms of a query, split exactly as documents are ([`occurrences`]),
-/// each once. Everything from the query's last whitespace-separated word (its
-/// parts and joined forms) is a [`QueryTerm::Prefix`]: that is the word being
-/// typed. `"kafka strea"` -> `Word("kafka")`, `Prefix("strea")`.
+/// each once, in query order. The query's last part is a
+/// [`QueryTerm::Prefix`], the word being typed, unless the query ends in a
+/// space (the word is finished). `"kafka strea"` -> `Word("kafka")`,
+/// `Prefix("strea")`; `"cse33"` -> `Word("cse")`, `Prefix("33")`.
+///
+/// Only parts, never joined forms (`cse332`, at the position of its first
+/// part). Documents index both, so the parts alone find `cse332`, `cse-332`,
+/// and `CSE 332`; requiring the joined form too would miss `CSE 332`. A
+/// query typed as one lowercase word (`getuser`) is a single part and still
+/// finds `getUser` through the document's joined form.
 pub fn query_terms(query: &str) -> Vec<QueryTerm> {
-    let found = occurrences(query);
-    let last_token_start = query
-        .split_whitespace()
-        .last()
-        .map_or(0, |last| occurrences(&query[..query.len() - last.len()]).iter().map(|o| o.position + 1).max().unwrap_or(0));
+    let mut parts: Vec<String> = Vec::new();
+    for occurrence in occurrences(query) {
+        // Parts take positions 0, 1, 2, ...; a joined form repeats an earlier one.
+        if occurrence.position as usize == parts.len() {
+            parts.push(occurrence.word);
+        }
+    }
+    let typing = !query.ends_with(char::is_whitespace);
+    let last = parts.len().saturating_sub(1);
     let mut terms: Vec<QueryTerm> = Vec::new();
-    for occurrence in found {
-        let term = if occurrence.position >= last_token_start {
-            QueryTerm::Prefix(occurrence.word)
-        } else {
-            QueryTerm::Word(occurrence.word)
-        };
+    for (i, part) in parts.into_iter().enumerate() {
+        let term = if typing && i == last { QueryTerm::Prefix(part) } else { QueryTerm::Word(part) };
         if !terms.contains(&term) {
             terms.push(term);
         }
@@ -210,7 +218,18 @@ impl InvertedIndex {
     /// the first word that does not start with it, as `FileIndex::children`
     /// does with paths.
     pub fn words_with_prefix(&self, prefix: &str, limit: usize) -> Vec<&str> {
-        todo!()
+        let mut words: Vec<&str> = self
+            .terms
+            .range::<str, _>((Bound::Included(prefix), Bound::Unbounded))
+            .take_while(|(word, _)| word.starts_with(prefix))
+            .map(|(word, _)| word.as_str())
+            .collect();
+        if words.len() > limit {
+            words.sort_by_key(|word| (word.len(), *word));
+            words.truncate(limit);
+            words.sort();
+        }
+        words
     }
 
     /// The live postings matching one term, in `DocId` order: a word's own
@@ -222,7 +241,25 @@ impl InvertedIndex {
     /// with positions `[3, 9]` for the prefix `kafka`. Collecting into a
     /// `BTreeMap<DocId, Vec<u32>>` keeps documents in order for you.
     pub fn term_postings(&self, term: &QueryTerm) -> Vec<Posting> {
-        todo!()
+        match term {
+            QueryTerm::Word(word) => self.postings(word).cloned().collect(),
+            QueryTerm::Prefix(prefix) => {
+                let mut merged: BTreeMap<DocId, Vec<u32>> = BTreeMap::new();
+                for word in self.words_with_prefix(prefix, MAX_PREFIX_WORDS) {
+                    for posting in self.postings(word) {
+                        merged.entry(posting.doc).or_default().extend_from_slice(&posting.positions);
+                    }
+                }
+                merged
+                    .into_iter()
+                    .map(|(doc, mut positions)| {
+                        positions.sort_unstable();
+                        positions.dedup();
+                        Posting { doc, positions }
+                    })
+                    .collect()
+            }
+        }
     }
 
     /// The documents containing every term, in `DocId` order, each with its
@@ -234,13 +271,193 @@ impl InvertedIndex {
     /// point at it. Start from the shortest list: the result can be no
     /// longer, and every later step only shrinks it.
     pub fn matching_docs(&self, terms: &[QueryTerm]) -> Vec<(DocId, Vec<Vec<u32>>)> {
-        todo!()
+        let lists: Vec<Vec<Posting>> = terms.iter().map(|term| self.term_postings(term)).collect();
+        Self::intersect_all(&lists)
+    }
+
+    /// [`InvertedIndex::matching_docs`] over each term's postings, already
+    /// looked up.
+    fn intersect_all(lists: &[Vec<Posting>]) -> Vec<(DocId, Vec<Vec<u32>>)> {
+        if lists.is_empty() || lists.iter().any(|list| list.is_empty()) {
+            return Vec::new();
+        }
+
+        let mut order: Vec<usize> = (0..lists.len()).collect();
+        order.sort_by_key(|&i| lists[i].len());
+
+        let mut docs: Vec<DocId> = lists[order[0]].iter().map(|posting| posting.doc).collect();
+        for &i in &order[1..] {
+            docs = Self::intersect(&docs, &lists[i]);
+            if docs.is_empty() {
+                return Vec::new();
+            }
+        }
+
+        docs.into_iter()
+            .filter_map(|doc| {
+                lists
+                    .iter()
+                    .map(|list| {
+                        let at = list.binary_search_by_key(&doc, |posting| posting.doc).ok()?;
+                        Some(list[at].positions.clone())
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(|positions| (doc, positions))
+            })
+            .collect()
     }
 
     /// The number of postings stored for `word`, dead documents' included.
     #[cfg(test)]
     fn stored_postings(&self, word: &str) -> usize {
         self.terms.get(word).map_or(0, Vec::len)
+    }
+
+    /// The documents in both `docs` and `list`, walking the two sorted lists together.
+    fn intersect(docs: &[DocId], list: &[Posting]) -> Vec<DocId> {
+        let (mut a, mut b) = (0, 0);
+        let mut both = Vec::new();
+        while a < docs.len() && b < list.len() {
+            match docs[a].cmp(&list[b].doc) {
+                Ordering::Less => a += 1,
+                Ordering::Greater => b += 1,
+                Ordering::Equal => {
+                    both.push(docs[a]);
+                    a += 1;
+                    b += 1;
+                }
+            }
+        }
+        both
+    }
+
+    /// The best `limit` documents containing every term, best first (see
+    /// [`ContentHit`] for the order).
+    ///
+    /// Each match is scored by BM25: for every term, its weight
+    /// ([`bm25_weight`], high for rare words) times how strongly this document
+    /// is about it ([`bm25_saturation`]: more occurrences count less and less,
+    /// and the same count means more in a short document), summed over the
+    /// terms. A prefix counts as one term: its merged postings give its count
+    /// per document and how many documents it is in.
+    pub fn search(&self, terms: &[QueryTerm], limit: usize) -> Vec<ContentHit> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let lists: Vec<Vec<Posting>> = terms.iter().map(|term| self.term_postings(term)).collect();
+        let documents = self.len() as f64;
+        let average = self.average_length();
+        let weights: Vec<f64> = lists.iter().map(|list| bm25_weight(documents, list.len() as f64)).collect();
+        let mut hits: Vec<ContentHit> = Self::intersect_all(&lists)
+            .into_iter()
+            .map(|(doc, positions)| {
+                let length = self.doc(doc).map_or(0.0, |info| f64::from(info.length));
+                let score = positions
+                    .iter()
+                    .zip(&weights)
+                    .map(|(found, weight)| weight * bm25_saturation(found.len() as f64, length, average))
+                    .sum();
+                let phrase = phrase_start(&positions);
+                ContentHit { doc, score, phrase: phrase.is_some(), at: phrase.unwrap_or_else(|| tightest_window(&positions)) }
+            })
+            .collect();
+        if hits.len() > limit {
+            hits.select_nth_unstable_by(limit - 1, ContentHit::rank);
+            hits.truncate(limit);
+        }
+        hits.sort_by(ContentHit::rank);
+        hits
+    }
+}
+
+/// How quickly repeats stop adding to a word's score (BM25's `k1`). At 1.2, in
+/// a document of average length, one occurrence scores 1, two 1.38, three
+/// 1.57, and no count ever passes 2.2: a page that says `kafka` forty times
+/// is not forty times about Kafka.
+pub const BM25_K1: f64 = 1.2;
+
+/// How much document length discounts a count (BM25's `b`): 0 ignores
+/// length, 1 divides by it fully. A word is weaker evidence in a 50-page PDF
+/// than in a three-line note.
+pub const BM25_B: f64 = 0.75;
+
+/// A term's weight, given how many of `documents` contain it: about
+/// `ln(documents / containing)`, so a word in every document weighs almost
+/// nothing and a word in one of 2,000 weighs about 7.2. The `+ 0.5`s keep it
+/// finite, and the `1 +` keeps it above zero (Lucene's form of BM25's IDF).
+pub fn bm25_weight(documents: f64, containing: f64) -> f64 {
+    (1.0 + (documents - containing + 0.5) / (containing + 0.5)).ln()
+}
+
+/// How strongly a document with `count` occurrences of a term, `length`
+/// positions long, is about it, between 0 and `BM25_K1 + 1`:
+/// `count * (k1 + 1) / (count + k1 * (1 - b + b * length / average))`.
+pub fn bm25_saturation(count: f64, length: f64, average: f64) -> f64 {
+    let stretch = if average > 0.0 { length / average } else { 1.0 };
+    count * (BM25_K1 + 1.0) / (count + BM25_K1 * (1.0 - BM25_B + BM25_B * stretch))
+}
+
+/// One document matching every term of a content search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContentHit {
+    pub doc: DocId,
+    /// The BM25 score: higher is better.
+    pub score: f64,
+    /// Whether the terms occur side by side somewhere, in query order (always
+    /// true for one term).
+    pub phrase: bool,
+    /// Where a snippet should show the match: the first phrase occurrence,
+    /// or else the start of the shortest stretch holding every term.
+    pub at: u32,
+}
+
+impl ContentHit {
+    /// Best first: a phrase above scattered words (`attention mechanism`
+    /// written together beats a long paper that uses both words apart), then
+    /// a higher score, then the lower number, so equal hits keep a fixed order.
+    fn rank(a: &ContentHit, b: &ContentHit) -> Ordering {
+        b.phrase.cmp(&a.phrase).then(b.score.total_cmp(&a.score)).then(a.doc.cmp(&b.doc))
+    }
+}
+
+/// The first position where term 0 sits at `p`, term 1 at `p + 1`, and so on,
+/// given each term's sorted positions in one document.
+fn phrase_start(positions: &[Vec<u32>]) -> Option<u32> {
+    let (first, rest) = positions.split_first()?;
+    first.iter().copied().find(|&start| {
+        rest.iter().zip(1u32..).all(|(list, offset)| list.binary_search(&(start + offset)).is_ok())
+    })
+}
+
+/// The start of the shortest stretch of a document holding at least one
+/// occurrence of every term, given each term's sorted positions (none empty).
+///
+/// Keep one pointer per list. The stretch the pointers mark runs from the
+/// lowest position to the highest. Any shorter stretch starting at that
+/// lowest position would have to leave out its own term, so the only way to
+/// find a shorter one is to move the lowest pointer forward. Repeat until a
+/// list runs out: every list's positions are visited once.
+fn tightest_window(positions: &[Vec<u32>]) -> u32 {
+    let mut next = vec![0usize; positions.len()];
+    let (mut best_span, mut best_start) = (u32::MAX, 0);
+    loop {
+        let (mut low, mut low_list, mut high) = (u32::MAX, 0, 0);
+        for (i, list) in positions.iter().enumerate() {
+            let position = list[next[i]];
+            if position < low {
+                low = position;
+                low_list = i;
+            }
+            high = high.max(position);
+        }
+        if high - low < best_span {
+            best_span = high - low;
+            best_start = low;
+        }
+        next[low_list] += 1;
+        if next[low_list] == positions[low_list].len() {
+            return best_start;
+        }
     }
 }
 
@@ -386,9 +603,16 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_identifier_matches_by_all_its_parts_as_prefixes() {
-        assert_eq!(query_terms("getUser"), vec![prefix("get"), prefix("user"), prefix("getuser")]);
-        assert_eq!(query_terms("notes cse332"), vec![word("notes"), prefix("cse"), prefix("332"), prefix("cse332")]);
+    fn a_typed_identifier_is_matched_by_its_parts() {
+        assert_eq!(query_terms("getUser"), vec![word("get"), prefix("user")]);
+        assert_eq!(query_terms("notes cse332"), vec![word("notes"), word("cse"), prefix("332")]);
+        assert_eq!(query_terms("getuser"), vec![prefix("getuser")], "one lowercase part");
+    }
+
+    #[test]
+    fn a_trailing_space_finishes_the_last_word() {
+        assert_eq!(query_terms("kafka "), vec![word("kafka")]);
+        assert_eq!(query_terms("kafka kafka"), vec![word("kafka"), prefix("kafka")]);
     }
 
     fn words_index() -> InvertedIndex {
@@ -446,6 +670,131 @@ mod tests {
         index.remove(Path::new("/h/a.md"));
         let docs: Vec<DocId> = index.matching_docs(&[prefix("kafka")]).into_iter().map(|(doc, _)| doc).collect();
         assert_eq!(docs, vec![1]);
+    }
+
+    fn found(index: &InvertedIndex, query: &str) -> Vec<String> {
+        index
+            .search(&query_terms(query), 10)
+            .into_iter()
+            .map(|hit| index.doc(hit.doc).unwrap().path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn index_of(documents: &[(&str, &str)]) -> InvertedIndex {
+        let mut index = InvertedIndex::new();
+        for (path, text) in documents {
+            index.add(Path::new(path), document_terms(text));
+        }
+        index
+    }
+
+    #[test]
+    fn scores_follow_the_bm25_formula() {
+        // streams.md: kafka twice in 5 positions; notes.txt: once in 4;
+        // todo.txt: none, 2 positions. Average length 11/3.
+        let index = sample();
+        let hits = index.search(&[word("kafka")], 10);
+        let weight = (1.0_f64 + (3.0 - 2.0 + 0.5) / (2.0 + 0.5)).ln();
+        let strength = |count: f64, length: f64| count * 2.2 / (count + 1.2 * (0.25 + 0.75 * length / (11.0 / 3.0)));
+        assert_eq!(hits.iter().map(|hit| hit.doc).collect::<Vec<_>>(), vec![0, 1]);
+        assert!((hits[0].score - weight * strength(2.0, 5.0)).abs() < 1e-9);
+        assert!((hits[1].score - weight * strength(1.0, 4.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rarer_words_weigh_more() {
+        let index = index_of(&[
+            ("/h/more-common.md", "alpha alpha beta"),
+            ("/h/more-rare.md", "alpha beta beta"),
+            ("/h/c.md", "alpha"),
+            ("/h/d.md", "alpha"),
+        ]);
+        assert_eq!(found(&index, "alpha beta "), vec!["/h/more-rare.md", "/h/more-common.md"]);
+        assert!(bm25_weight(4.0, 2.0) > bm25_weight(4.0, 4.0));
+        assert!(bm25_weight(4.0, 4.0) > 0.0, "never negative, even in every document");
+    }
+
+    #[test]
+    fn repeats_add_less_and_less() {
+        let one = bm25_saturation(1.0, 10.0, 10.0);
+        let two = bm25_saturation(2.0, 10.0, 10.0);
+        let three = bm25_saturation(3.0, 10.0, 10.0);
+        assert!((one - 1.0).abs() < 1e-9, "one occurrence at average length scores 1");
+        assert!(two - one > three - two && three > two);
+        assert!(bm25_saturation(1_000.0, 10.0, 10.0) < BM25_K1 + 1.0);
+    }
+
+    #[test]
+    fn the_same_count_means_more_in_a_shorter_document() {
+        let index = index_of(&[
+            ("/h/long.md", "kafka and a great many other words that dilute it here"),
+            ("/h/short.md", "kafka notes"),
+        ]);
+        assert_eq!(found(&index, "kafka "), vec!["/h/short.md", "/h/long.md"]);
+    }
+
+    #[test]
+    fn a_phrase_ranks_above_scattered_words() {
+        let index = index_of(&[
+            ("/h/scattered.md", "attention attention is all about the mechanism mechanism"),
+            ("/h/phrase.md", "the attention mechanism explained in a few more words"),
+        ]);
+        let hits = index.search(&query_terms("attention mechanism"), 10);
+        assert_eq!(found(&index, "attention mechanism"), vec!["/h/phrase.md", "/h/scattered.md"]);
+        assert!(hits[0].phrase && !hits[1].phrase);
+        assert!(hits[1].score > hits[0].score, "the scattered one scores higher, yet ranks lower");
+        assert!(index.search(&query_terms("mechanism attention"), 10).iter().all(|hit| !hit.phrase), "order matters");
+    }
+
+    #[test]
+    fn the_snippet_goes_at_the_phrase_or_the_tightest_stretch() {
+        // mechanism@0 ... attention@5 ... mechanism@9
+        let index = index_of(&[("/h/a.md", "mechanism and then much later attention far from the mechanism")]);
+        let hit = &index.search(&query_terms("attention mechanism"), 10)[0];
+        assert!(!hit.phrase);
+        assert_eq!(hit.at, 5, "attention@5..mechanism@9 is shorter than mechanism@0..attention@5");
+
+        let index = index_of(&[("/h/b.md", "kafka streams then kafka streams again")]);
+        let hit = &index.search(&query_terms("kafka streams"), 10)[0];
+        assert!(hit.phrase);
+        assert_eq!(hit.at, 0, "the first occurrence of the phrase");
+        assert_eq!(tightest_window(&[vec![0, 9], vec![5]]), 5);
+        assert_eq!(tightest_window(&[vec![3]]), 3);
+    }
+
+    #[test]
+    fn only_the_best_few_are_kept_in_order() {
+        let documents: Vec<(String, String)> =
+            (1..=12).map(|i| (format!("/h/{i}.md"), format!("{} filler words", "kafka ".repeat(i)))).collect();
+        let pairs: Vec<(&str, &str)> = documents.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        let index = index_of(&pairs);
+        let all = index.search(&query_terms("kafka"), 100);
+        assert_eq!(all.len(), 12);
+        assert_eq!(index.search(&query_terms("kafka"), 3), all[..3].to_vec());
+        assert!(all.windows(2).all(|pair| pair[0].score >= pair[1].score));
+        assert!(index.search(&query_terms("kafka"), 0).is_empty());
+    }
+
+    #[test]
+    fn a_course_number_is_found_however_it_was_written() {
+        let index = index_of(&[
+            ("/h/joined.md", "cse332 midterm"),
+            ("/h/spaced.md", "CSE 332 midterm"),
+            ("/h/dashed.md", "cse-332 midterm"),
+            ("/h/other.md", "cse 351 midterm"),
+        ]);
+        let mut found = found(&index, "cse332");
+        found.sort();
+        assert_eq!(found, vec!["/h/dashed.md", "/h/joined.md", "/h/spaced.md"]);
+        assert_eq!(index.search(&query_terms("cse332"), 10).iter().filter(|hit| hit.phrase).count(), 3);
+    }
+
+    #[test]
+    fn a_word_being_typed_already_finds_its_documents() {
+        let index = words_index();
+        assert_eq!(found(&index, "kafka strea"), vec!["/h/a.md"]);
+        assert_eq!(found(&index, "getuser"), Vec::<String>::new());
+        assert!(index.search(&[], 10).is_empty());
     }
 
     #[test]

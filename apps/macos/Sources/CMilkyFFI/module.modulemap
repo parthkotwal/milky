@@ -12,5 +12,13 @@ module CMilkyFFI {
     // The live file index follows file changes through FSEvents, which lives
     // in CoreServices.
     link framework "CoreServices"
+    // Document search extracts text with Apple's engines: PDFKit for PDFs,
+    // AppKit's document readers for Word and RTF (through Foundation and
+    // the Objective-C runtime).
+    link framework "PDFKit"
+    link framework "CoreGraphics"
+    link framework "AppKit"
+    link framework "Foundation"
+    link "objc"
     export *
 }
