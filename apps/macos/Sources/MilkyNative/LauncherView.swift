@@ -212,12 +212,26 @@ public struct LauncherView: View {
             }
         } else {
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(state.results) { result in
-                            row(result).id(result.id).transition(.opacity)
+                GeometryReader { viewport in
+                    ScrollView {
+                        LazyVStack(spacing: 2) {
+                            ForEach(Array(state.results.enumerated()), id: \.element.id) { index, result in
+                                row(result)
+                                    .background(GeometryReader { geometry in
+                                        Color.clear.preference(key: ResultFramesKey.self,
+                                            value: [result.id: geometry.frame(in: .named("milky-results"))])
+                                    })
+                                    .id(result.id).transition(.opacity)
+                            }
                         }
-                    }.padding(8)
+                        .padding(8)
+                    }
+                    .coordinateSpace(name: "milky-results")
+                    .onPreferenceChange(ResultFramesKey.self) { frames in
+                        let bounds = CGRect(origin: .zero, size: viewport.size)
+                        let visible = frames.values.filter { $0.intersects(bounds) }.count
+                        if let searchID = state.activeSearchID { state.recordRendered(searchID: searchID, visible: visible) }
+                    }
                 }
                 .onChange(of: state.selectedID, initial: true) { _, id in
                     if let id { proxy.scrollTo(id, anchor: .center) }
@@ -372,6 +386,13 @@ public struct LauncherView: View {
     private func open() { Task { await state.openSelected() } }
     private func dismissOrClose() {
         if !state.closeOverlay() { dismiss() }
+    }
+}
+
+private struct ResultFramesKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 

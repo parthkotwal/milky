@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import MilkyNative
 import MilkyRust
+import os
 import SwiftUI
 
 @main
@@ -42,9 +43,12 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         if visualConcept != nil { provider = DesignFixtureSearchProvider() }
         else if fixtures { provider = FixtureSearchProvider() }
         else { provider = rust }
-        return LauncherState(provider: provider, opener: NativeAppOpener(),
-                             eventRecorder: fixtures ? nil : rust)
+        return LauncherState(provider: provider, opener: NativeAppOpener())
     }()
+    private let interactionRecorder = InteractionSessionRecorder()
+    private var activityObserver: AppActivityObserver?
+    private var pendingDwellResultID: String?
+    private var eventWriteTask: Task<Void, Never>?
     private var preparation: Task<Void, Never>?
     private var terminating = false
     private var displayName: String { fixtures ? "Milky — Fixtures" : "Milky" }
@@ -62,6 +66,16 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         installMainMenu()
         let front = NSWorkspace.shared.frontmostApplication
         if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { lastExternalPID = front?.processIdentifier }
+        if !fixtures {
+            let rust = self.rust
+            let observer = AppActivityObserver(sendFocus: { [weak self, rust] intervals in
+                self?.enqueueRecording { try await rust.recordFocus(intervals) }
+            }, sendDwell: { [weak self, rust] session in
+                self?.enqueueRecording { try await rust.recordEvents(session) }
+            })
+            activityObserver = observer
+            observer.start()
+        }
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] notification in
@@ -71,7 +85,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
                 self.lastExternalPID = pid
                 self.record("external-activation")
-                if self.session.isPresented && !self.state.isOpening { self.dismiss(restoreFocus: false) }
+                if self.session.isPresented && !self.state.isOpening { self.dismiss(restoreFocus: false, reason: "app_switch") }
             }
         }
         screenObserver = NotificationCenter.default.addObserver(
@@ -108,7 +122,15 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         if CommandLine.arguments.contains("--appearance=dark") { panel.appearance = NSAppearance(named: .darkAqua) }
         state.onOpened = { [weak self] in
             self?.record("action-opened")
-            self?.dismiss(restoreFocus: false)
+            self?.dismiss(restoreFocus: false, reason: "action")
+        }
+        state.onQueryChanged = { [weak self] in self?.interactionRecorder.query($0) }
+        state.onRendered = { [weak self] in self?.interactionRecorder.rendered(searchID: $0, visible: $1) }
+        state.onHighlight = { [weak self] in self?.interactionRecorder.highlight(searchID: $0, resultID: $1, index: $2) }
+        state.onTabComplete = { [weak self] in self?.interactionRecorder.tabComplete(searchID: $0, resultID: $1) }
+        state.onAction = { [weak self] action, searchID, resultID, index, succeeded in
+            self?.interactionRecorder.action(action, searchID: searchID, resultID: resultID, index: index, succeeded: succeeded)
+            if succeeded && (action == "open" || action == "reveal") { self?.pendingDwellResultID = resultID }
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -139,7 +161,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         shortcut = GlobalShortcut(modifiers: UInt32(modifiers)) { [weak self] in
             guard let self else { return }
             self.record("hotkey")
-            if self.session.isPresented { self.dismiss(restoreFocus: true) } else { self.show() }
+            if self.session.isPresented { self.dismiss(restoreFocus: true, reason: "hotkey") } else { self.show(invocation: "hotkey") }
         }
         if shortcut == nil {
             let item = NSMenuItem(title: "Shortcut unavailable — use Show Milky", action: nil, keyEquivalent: "")
@@ -149,7 +171,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
             showItem.title = "Show \(displayName)  \(label)"
         }
         record(shortcut == nil ? "shortcut-unavailable" : "shortcut-registered")
-        show()
+        show(invocation: "other")
         if !fixtures {
             preparation = Task { [weak self, rust] in
                 do { try await rust.prepare() }
@@ -188,7 +210,7 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         NSApp.mainMenu = main
     }
 
-    @objc private func showFromMenu() { show() }
+    @objc private func showFromMenu() { show(invocation: "other") }
     @objc private func quitApp() { NSApp.terminate(nil) }
     @objc private func inspectSelectedFile() {
         guard session.isPresented else { return }
@@ -200,17 +222,22 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
     }
 
     private func dismissOrClose() {
-        if !state.closeOverlay() { dismiss(restoreFocus: true) }
+        if !state.closeOverlay() { dismiss(restoreFocus: true, reason: "escape") }
     }
 
-    private func show() {
+    private func show(invocation: String = "other") {
         guard !terminating else { return }
         let queryToSelect: String?
         if !session.isPresented {
             let front = NSWorkspace.shared.frontmostApplication
             let previous = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? lastExternalPID : front?.processIdentifier
+            let startedAt = Date()
+            let context = interactionContext(frontmostPID: previous, at: startedAt)
             session.begin(previousPID: previous)
             queryToSelect = state.beginSession()
+            if !fixtures {
+                interactionRecorder.begin(invocation: invocation, context: context, initialQuery: state.query)
+            }
             repositionForDisplayChange()
         } else {
             queryToSelect = nil
@@ -251,10 +278,11 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         return nil
     }
 
-    private func dismiss(restoreFocus: Bool) {
+    private func dismiss(restoreFocus: Bool, reason: String = "other") {
         guard session.isPresented else { return }
         let ownsFocus = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
         let target = session.dismiss(restoreFocus: restoreFocus, ownsFocus: ownsFocus)
+        finishInteractionSession(reason: reason)
         record(restoreFocus ? "dismiss-return" : "dismiss-no-return")
         state.dismiss()
         panel.orderOut(nil)
@@ -294,17 +322,35 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         record("reopen")
-        show()
+        show(invocation: "other")
         return true
+    }
+
+    private func interactionContext(frontmostPID: pid_t?, at date: Date) -> InteractionContext {
+        func appID(_ app: NSRunningApplication?) -> String? {
+            guard let path = app?.bundleURL?.path, path.hasPrefix("/") else { return nil }
+            return "app:\(path)"
+        }
+        let frontmost = frontmostPID.flatMap { NSRunningApplication(processIdentifier: $0) }
+        let running = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap(appID)
+        return InteractionContext(frontmostApp: appID(frontmost), runningApps: running,
+            timezoneOffsetMin: TimeZone.current.secondsFromGMT(for: date) / 60,
+            onBattery: nil, displays: NSScreen.screens.count)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
         terminating = true
+        finishInteractionSession(reason: "other")
+        activityObserver?.stop()
+        let pendingEventWrite = eventWriteTask
         state.dismiss()
         preparation?.cancel()
         shortcut?.invalidate()
         Task {
+            await pendingEventWrite?.value
             await rust.shutdown()
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -312,6 +358,8 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        finishInteractionSession(reason: "other")
+        activityObserver?.stop()
         state.dismiss()
         shortcut?.invalidate()
         NSStatusBar.system.removeStatusItem(statusItem)
@@ -319,6 +367,32 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         record("terminated")
         diagnostics.close()
+    }
+
+    private func finishInteractionSession(reason: String) {
+        guard let batch = interactionRecorder.finish(end: reason) else { return }
+        enqueueRecording { [rust] in
+            do { try await rust.recordEvents(batch) }
+            catch { Self.logRecordingError(error, label: "launcher session") }
+        }
+        if let resultID = pendingDwellResultID {
+            pendingDwellResultID = nil
+            activityObserver?.beginDwell(session: batch, resultID: resultID)
+        }
+    }
+
+    private func enqueueRecording(_ operation: @escaping @Sendable () async throws -> Void) {
+        let previous = eventWriteTask
+        eventWriteTask = Task {
+            await previous?.value
+            do { try await operation() }
+            catch { Self.logRecordingError(error, label: "activity") }
+        }
+    }
+
+    nonisolated private static func logRecordingError(_ error: Error, label: String) {
+        let diagnostic = (error as? any SafeDiagnosticError)?.safeDiagnostic ?? String(reflecting: type(of: error))
+        Logger(subsystem: "com.milky", category: "usage").error("Failed to record \(label): \(diagnostic, privacy: .public)")
     }
 }
 

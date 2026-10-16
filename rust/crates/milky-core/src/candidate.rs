@@ -113,6 +113,8 @@ pub struct FileFacts {
     /// files without one.
     pub extension: Option<String>,
     pub modified: Option<SystemTime>,
+    /// When it was last opened, as macOS records it.
+    pub last_used: Option<SystemTime>,
 }
 
 impl Candidate {
@@ -262,6 +264,7 @@ pub fn from_file(entry: &FileEntry, home: &Path) -> Option<Candidate> {
             folder_words,
             extension,
             modified: entry.modified,
+            last_used: entry.last_used,
         }),
     })
 }
@@ -607,6 +610,7 @@ mod tests {
             path: PathBuf::from(path),
             is_folder,
             modified: Some(SystemTime::UNIX_EPOCH),
+            last_used: None,
         }
     }
 
@@ -671,6 +675,7 @@ mod tests {
                 path,
                 is_folder: false,
                 modified: None,
+                last_used: None,
             },
             home,
         )

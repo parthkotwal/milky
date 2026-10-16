@@ -1,5 +1,6 @@
 //! Milky's search engine core.
 
+pub mod activity;
 pub mod api;
 pub mod apps;
 pub mod candidate;
@@ -13,6 +14,7 @@ pub mod places;
 pub mod search;
 pub mod settings;
 pub mod storage;
+pub mod store;
 pub mod usage;
 
 /// Normalize text for matching: fold case, accents, compatibility forms,

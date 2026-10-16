@@ -11,6 +11,9 @@ unicode-normalization = "0.1"
 plist = "1"
 # File-change notifications (FSEvents on macOS) for the live file index.
 notify = "8"
+# The local event store (DECISIONS 2026-10-15). Bundled: the same SQLite on
+# every Mac, nothing extra to link from Swift, and FTS5 available.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Finder's display names come from macOS LaunchServices via CoreFoundation.
 [target.'cfg(target_os = "macos")'.dependencies]

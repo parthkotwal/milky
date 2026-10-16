@@ -4,17 +4,7 @@ import XCTest
 private struct PanelSearch: SearchProvider {
     let results: [AppResult]
     func search(query: String) async throws -> [AppResult] { results }
-}
-
-private actor PanelSelectionRecorder: SelectionEventRecording {
-    private(set) var events: [SelectionEvent] = []
-    var fails = false
-    func recordSelection(_ event: SelectionEvent) async throws {
-        events.append(event)
-        if fails { throw FixtureError.unavailable }
-    }
-    func setFails(_ value: Bool) { fails = value }
-    func recordedEvents() -> [SelectionEvent] { events }
+    func searchResponse(query: String) async throws -> SearchResponse { SearchResponse(results: results, searchID: "panel-search") }
 }
 
 @MainActor private final class PanelOpener: AppOpening {
@@ -95,56 +85,42 @@ private actor PanelSelectionRecorder: SelectionEventRecording {
         XCTAssertFalse(state.closeOverlay())
     }
 
-    func testSecondaryResultActionsRecordSelectionAndOutcome() async throws {
+    func testSecondaryResultActionsExposeActionOutcomeForSessionBatch() async throws {
         let opener = PanelOpener()
-        let recorder = PanelSelectionRecorder()
-        let state = LauncherState(provider: PanelSearch(results: [file, setting]), opener: opener,
-                                  eventRecorder: recorder)
+        let state = LauncherState(provider: PanelSearch(results: [file, setting]), opener: opener)
+        var actions: [(String, String, String, Int, Bool)] = []
+        state.onAction = { actions.append(($0, $1, $2, $3, $4)) }
         state.setQuery("report")
         try await waitForSearch(state)
 
         state.toggleActionMenu()
         await state.chooseMenuAction(.reveal)
-        for _ in 0..<1000 {
-            if await recorder.recordedEvents().count == 1 { break }
-            try await Task.sleep(for: .milliseconds(1))
-        }
 
         opener.secondaryFails = true
         state.toggleActionMenu()
         await state.chooseMenuAction(.copyLocation)
-        for _ in 0..<1000 {
-            if await recorder.recordedEvents().count == 2 { break }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-
-        let events = await recorder.recordedEvents()
-        XCTAssertEqual(events, [
-            SelectionEvent(query: "report", shown: [file.id, setting.id], selected: file.id, outcome: .opened),
-            SelectionEvent(query: "report", shown: [file.id, setting.id], selected: file.id, outcome: .failed),
-        ])
+        XCTAssertEqual(actions.map { $0.0 }, ["menu", "reveal", "menu", "copy_path"])
+        XCTAssertEqual(actions[1].1, "panel-search")
+        XCTAssertEqual(actions[1].2, file.id)
+        XCTAssertEqual(actions[1].3, 0)
+        XCTAssertTrue(actions[1].4)
+        XCTAssertFalse(actions[3].4)
         XCTAssertNotNil(state.errorMessage)
     }
 
-    func testSelectionRecorderFailureDoesNotBreakActionFeedback() async throws {
+    func testActionFeedbackWorksWhileSessionEventsAreCollected() async throws {
         let opener = PanelOpener()
-        let recorder = PanelSelectionRecorder()
-        await recorder.setFails(true)
-        let state = LauncherState(provider: PanelSearch(results: [setting]), opener: opener,
-                                  eventRecorder: recorder)
+        let state = LauncherState(provider: PanelSearch(results: [setting]), opener: opener)
+        var action: (String, Bool)?
+        state.onAction = { action = ($0, $4) }
         state.setQuery("wifi")
         try await waitForSearch(state)
 
         state.toggleActionMenu()
         await state.chooseMenuAction(.copyLocation)
-        for _ in 0..<1000 {
-            if await recorder.recordedEvents().count == 1 { break }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-
         XCTAssertEqual(state.statusMessage, "Link copied")
         XCTAssertNil(state.errorMessage)
-        let eventCount = await recorder.recordedEvents().count
-        XCTAssertEqual(eventCount, 1)
+        XCTAssertEqual(action?.0, "copy_path")
+        XCTAssertEqual(action?.1, true)
     }
 }

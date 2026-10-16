@@ -180,6 +180,33 @@ pub fn search<'a>(
     limit: usize,
     usage_of: impl Fn(&str) -> f64,
 ) -> Vec<Hit<'a>> {
+    search_with_pool(candidates, query, limit, 0, usage_of).shown
+}
+
+/// Bump whenever matching or ranking rules change, so logged impressions can
+/// be told apart by the rules that produced them.
+pub const RANKER_VERSION: u32 = 1;
+
+/// A search's results, plus the wider pool they were chosen from.
+#[derive(Debug)]
+pub struct Served<'a> {
+    /// What the client is shown: [`search`]'s answer.
+    pub shown: Vec<Hit<'a>>,
+    /// The best `pool` hits by [`rank`] alone (no file cap, no typed folder):
+    /// the alternatives a learned ranker can choose between, logged with their
+    /// features because those cannot be reconstructed later.
+    pub pool: Vec<Hit<'a>>,
+}
+
+/// [`search`], also returning the best `pool` hits for logging. Costs one
+/// extra partial selection over the same hits.
+pub fn search_with_pool<'a>(
+    candidates: &'a [Candidate],
+    query: &str,
+    limit: usize,
+    pool: usize,
+    usage_of: impl Fn(&str) -> f64,
+) -> Served<'a> {
     let short_query = query.chars().filter(|c| *c != ' ').count() < MIN_FILE_QUERY_CHARS;
     let hits: Vec<Hit<'a>> = candidates
         .iter()
@@ -243,8 +270,79 @@ pub fn search<'a>(
         })
         .collect();
 
+    // Copying hits is cheap (a reference and a few numbers each), but skip it
+    // when no pool is wanted.
+    let pool = if pool == 0 { Vec::new() } else { top(hits.clone(), pool) };
     let best = select_best(hits, limit, file_cap(limit));
-    with_typed_folder(best, candidates, query, limit)
+    Served { shown: with_typed_folder(best, candidates, query, limit), pool }
+}
+
+/// What the ranker knew about one hit when it served it: the raw facts a
+/// learned ranker trains on. Recorded at serving time because usage decays,
+/// files change, and rules change; none of this can be recomputed later.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Features {
+    pub tier: Tier,
+    /// [`standing`]: the tier as ranked, lower for the long tail.
+    pub standing: i8,
+    /// How the title matched, if it did.
+    pub match_kind: Option<MatchKind>,
+    pub keyword: Option<KeywordMatch>,
+    pub usage: f64,
+    pub prior: Prior,
+    pub title_chars: usize,
+    /// Path components, for files and folders: how deep it sits.
+    pub depth: Option<usize>,
+    /// Seconds since a file or folder was modified, at serving time.
+    pub age_s: Option<i64>,
+    /// Seconds since a file or folder was last opened (macOS's record).
+    pub last_used_age_s: Option<i64>,
+    /// How busy its folder has been lately, and the whole area above it
+    /// (see [`crate::activity`]). Files and folders only.
+    pub folder_activity: Option<f64>,
+    pub tree_activity: Option<f64>,
+}
+
+/// Seconds from `then` to `now`; negative if `then` is in the future.
+fn seconds_since(then: SystemTime, now: SystemTime) -> i64 {
+    match now.duration_since(then) {
+        Ok(age) => age.as_secs() as i64,
+        Err(ahead) => -(ahead.duration().as_secs() as i64),
+    }
+}
+
+/// The features of `hit`, served at `now`, with folder activity from
+/// `activity`.
+pub fn features(hit: &Hit, now: SystemTime, activity: &crate::activity::FolderActivity) -> Features {
+    let file_path = match &hit.candidate.action {
+        Action::Open(path) if hit.candidate.file.is_some() => Some(path),
+        _ => None,
+    };
+    let age_s = modified(hit).map(|modified| seconds_since(modified, now));
+    let last_used_age_s = hit
+        .candidate
+        .file
+        .as_ref()
+        .and_then(|facts| facts.last_used)
+        .map(|used| seconds_since(used, now));
+    let (folder_activity, tree_activity) = match file_path.map(|path| activity.around(path, now)) {
+        Some((folder, tree)) => (Some(folder), Some(tree)),
+        None => (None, None),
+    };
+    Features {
+        tier: hit.tier,
+        standing: standing(hit),
+        match_kind: hit.kind,
+        keyword: hit.keyword,
+        usage: hit.usage,
+        prior: hit.candidate.prior(),
+        title_chars: hit.title.chars().count(),
+        depth: file_path.map(|path| path.components().count()),
+        age_s,
+        last_used_age_s,
+        folder_activity,
+        tree_activity,
+    }
 }
 
 /// The folder `query` named on the way to the file at `path`: the deepest
@@ -724,6 +822,7 @@ mod tests {
             path: std::path::PathBuf::from(path),
             is_folder: !path.contains('.'),
             modified: None,
+            last_used: None,
         };
         crate::candidate::from_file(&entry, std::path::Path::new("/Users/someone")).unwrap()
     }
@@ -883,6 +982,7 @@ mod tests {
             path: std::path::PathBuf::from(path),
             is_folder: false,
             modified: Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+            last_used: None,
         };
         crate::candidate::from_file(&entry, std::path::Path::new("/Users/someone")).unwrap()
     }

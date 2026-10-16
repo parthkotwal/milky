@@ -15,14 +15,16 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::ErrorKind;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::activity::FolderActivity;
 use crate::apps;
+use crate::store::Store;
 use crate::engine::{Index, Snapshots, Sources, user_exclusions};
 use crate::files::{self, FileEntry};
 
@@ -99,6 +101,9 @@ pub struct Plan {
     pub apps_changed: bool,
     /// Indexed folders whose contents changed, to re-read.
     pub folders: BTreeSet<PathBuf>,
+    /// How many changed paths each of `folders` had: its activity in this
+    /// batch.
+    pub changes: BTreeMap<PathBuf, usize>,
 }
 
 /// Decide what a batch means. An event matters only if its folder is one we
@@ -123,6 +128,7 @@ pub fn plan(batch: &Batch, index: &FileIndex, exclusions_file: Option<&Path>) ->
                 plan.apps_changed = true;
             } else if let Some(folder) = path.parent().filter(|folder| index.tracks(folder)) {
                 plan.folders.insert(folder.to_path_buf());
+                *plan.changes.entry(folder.to_path_buf()).or_default() += 1;
             }
         }
     }
@@ -137,15 +143,21 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    /// Start the thread: watch, walk, publish, then follow changes. If the
-    /// thread cannot be created, the engine still answers for everything but
-    /// files.
-    pub fn start(snapshots: Arc<Snapshots>, sources: Sources) -> Self {
+    /// Start the thread: watch, walk, publish, then follow changes, counting
+    /// each folder's changes into `activity` and `store`. If the thread cannot
+    /// be created, the engine still answers for everything but files.
+    pub fn start(
+        snapshots: Arc<Snapshots>,
+        sources: Sources,
+        store: Arc<Mutex<Option<Store>>>,
+        activity: Arc<Mutex<FolderActivity>>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let for_watcher = sender.clone();
+        let activity = Recorder { store, activity };
         let thread = std::thread::Builder::new()
             .name("milky-indexer".to_string())
-            .spawn(move || run(&snapshots, sources, &receiver, for_watcher))
+            .spawn(move || run(&snapshots, sources, &receiver, for_watcher, &activity))
             .ok();
         Self { messages: sender, thread }
     }
@@ -166,8 +178,45 @@ impl Indexer {
     }
 }
 
+/// Where the indexer reports folder activity: the in-memory scores searches
+/// read, and the event store.
+struct Recorder {
+    store: Arc<Mutex<Option<Store>>>,
+    activity: Arc<Mutex<FolderActivity>>,
+}
+
+impl Recorder {
+    fn record(&self, changes: &BTreeMap<PathBuf, usize>) {
+        if changes.is_empty() {
+            return;
+        }
+        let now = std::time::SystemTime::now();
+        {
+            let mut activity = self.activity.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (folder, count) in changes {
+                activity.record(folder, *count, now);
+            }
+        }
+        let rows: Vec<(String, usize)> = changes
+            .iter()
+            .filter_map(|(folder, count)| Some((crate::candidate::folder_id(folder)?, *count)))
+            .collect();
+        let at_ms = now.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64);
+        let mut store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(store) = store.as_mut() {
+            let _ = store.record_folder_activity(&rows, at_ms);
+        }
+    }
+}
+
 /// The indexer thread's whole life.
-fn run(snapshots: &Snapshots, mut sources: Sources, messages: &Receiver<Message>, for_watcher: Sender<Message>) {
+fn run(
+    snapshots: &Snapshots,
+    mut sources: Sources,
+    messages: &Receiver<Message>,
+    for_watcher: Sender<Message>,
+    recorder: &Recorder,
+) {
     let Some(home) = sources.home.clone() else {
         // No home folder: nothing to walk or watch; wait to be stopped.
         snapshots.publish(Index::new(sources.candidates(&[]), true));
@@ -190,6 +239,7 @@ fn run(snapshots: &Snapshots, mut sources: Sources, messages: &Receiver<Message>
 
     while let Some(batch) = next_batch(messages, BATCH_WINDOW) {
         let plan = plan(&batch, &index, exclusions_file.as_deref());
+        recorder.record(&plan.changes);
         let mut changed = false;
         if plan.apps_changed {
             sources.apps = apps::discover_apps();
@@ -384,11 +434,11 @@ mod tests {
     }
 
     fn file(path: &str) -> FileEntry {
-        FileEntry { path: PathBuf::from(path), is_folder: false, modified: at(1) }
+        FileEntry { path: PathBuf::from(path), is_folder: false, modified: at(1), last_used: None }
     }
 
     fn folder(path: &str) -> FileEntry {
-        FileEntry { path: PathBuf::from(path), is_folder: true, modified: at(1) }
+        FileEntry { path: PathBuf::from(path), is_folder: true, modified: at(1), last_used: None }
     }
 
     fn index(entries: Vec<FileEntry>) -> FileIndex {
@@ -584,6 +634,11 @@ mod tests {
             plan.folders.into_iter().collect::<Vec<_>>(),
             vec![PathBuf::from("/h"), PathBuf::from("/h/docs")],
             "each changed folder once; hidden, Library, and unindexed folders dropped"
+        );
+        assert_eq!(
+            plan.changes.into_iter().collect::<Vec<_>>(),
+            vec![(PathBuf::from("/h"), 1), (PathBuf::from("/h/docs"), 2)],
+            "and how many changes each had"
         );
     }
 

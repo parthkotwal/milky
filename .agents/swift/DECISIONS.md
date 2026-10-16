@@ -324,3 +324,43 @@ refreshes, preventing stale rows from launching under a new engine response.
 If the selected destination disappears, the existing refresh rule selects the
 first result. A late response from the previous session remains invalidated by
 the generation token.
+
+## 2026-10-16 — Record phase-1 interaction sessions
+
+Decision: Replace Swift's per-action `record_selection` calls with one
+`record_events` batch per real launcher session, following the cross-language
+format agreed on 2026-10-15. Preserve Rust `search_id`s with their results and
+include query changes, rendered rows, highlight changes, accepted Tab
+completions, action outcomes, invocation context, and the session end reason.
+Fixture and design-fixture sessions remain excluded.
+
+Why: The batch retains the sequence and context around a selection and records
+abandoned searches without counting an action twice. Rust uses `action` events
+with `opened` outcomes for selection-derived usage and stores result impressions
+from the rendered searches.
+
+Consequences: The batch is sent asynchronously when the panel dismisses. Action
+feedback and focus behavior stay independent of persistence. The phase-1 Swift
+context currently reports battery state as unknown; click-away has no dedicated
+panel dismissal path yet. Post-pick dwell and focus intervals remain phase 2.
+
+## 2026-10-16 — Record post-pick dwell and resident app focus
+
+Decision: After a successful Open or Reveal, track the external foreground app
+and send its completed dwell as a second `record_events` request carrying the
+same session header and one dwell event. In real launcher mode, observe regular
+foreground apps for focus intervals and send completed batches through
+`record_focus`. Exclude Milky and fixture/design runs. Detect inactivity through
+system idle durations only; never capture keyboard or pointer contents.
+
+Why: The agreed phase-2 event contract adds time spent in a picked destination
+and app-level focus context to phase-1 launcher sessions. A resident observer
+can collect both without delaying the launcher action or inventing a Swift-side
+history store.
+
+Consequences: Dwell ends on app switch, hide, quit, two-minute idle, screen
+sleep/lock, or 30 minutes. Focus intervals end on switch, idle, sleep, lock,
+quit, or shutdown, and completed records are sent in bounded batches. Writes
+are ordered and drained before Rust shuts down. The wire formats and Rust
+acceptance are tested; live macOS activation and power/session notifications
+remain dogfooding checks.

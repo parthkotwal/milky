@@ -828,3 +828,114 @@ Implementation notes (2026-10-14), appended to the entry above:
   in ~0.11 s, files after ~0.18 s; a created or deleted file appears in under
   a second; a full Rust build cost the indexer 0.06 s of CPU, all filtered.
 - `libmilky_ffi.a` now also needs the CoreServices framework (FSEvents).
+
+---
+
+## 2026-10-15 — Log interactions for learning: sessions, served features, context, focus
+
+Status: phases 1 and 2 implemented on the Rust side 2026-10-16, with phase
+3's export, pause, and delete; Swift sides in progress; retention pending.
+
+Decision:
+
+Record enough that a learned ranker (and later personalization) never has to
+wait for new data to be collected. Four kinds of evidence:
+
+1. Search sessions (Swift captures): invocation and how it ended (pick, Esc,
+   click away, app switch); every query state with timestamps; which results
+   were actually rendered for each; highlights, Tab completion, and the action
+   taken (open, reveal, copy, inspect); time to pick; after a pick, whether
+   the result stayed in front and for how long.
+2. What the engine served (Rust): a `search_id` on every search reply,
+   echoed by Swift in its events; for each search the top ~50 candidates (not
+   only the visible ones) with their features at serving time (tier,
+   standing, keyword match, usage score, prior, kind, file age, depth, file
+   cap applied); the ranker version and index summary; latency. Features are
+   logged because usage decays, files change, and rules change: they cannot
+   be reconstructed later.
+3. Context per invocation (Swift): frontmost app before invoking; time of day
+   and weekday; running apps with a regular activation policy only (menu-bar
+   and background agents such as Wispr Flow excluded); power and display.
+4. Ambient behavior: app focus intervals all day (Swift, a resident observer
+   on app activation), ended by screen sleep, lock, or a few minutes without
+   input, so an app left in front overnight is not counted; files' macOS
+   "last used" dates and per-folder activity (Rust).
+
+Not logged: keystrokes outside Milky's field, clipboard contents, window
+titles, file contents.
+
+Storage: SQLite (the architecture's planned store for history), one database
+in Milky's data folder, written off the search path. Full detail kept 90 days,
+then compacted to summaries. `milky export` for the Python ML workspace;
+pause and delete-history controls. Swift sends its events in batches through
+a new additive `record_events` message, with `search_id` on search replies.
+
+Phases: 1) search IDs, impressions with features, sessions with keystrokes,
+timing, dismissals, and context, in SQLite; 2) post-pick dwell, focus
+intervals, file last-used dates, folder activity; 3) retention, export,
+privacy controls.
+
+Why:
+
+`events.jsonl` records only picks (16 after a week): no skips, no
+abandonment, no timing, no context, and no record of why a result ranked where
+it did. "Running" is a poor signal of use (agents and idle apps run all day),
+so focus intervals with idle detection carry it instead; the model, not a
+hand rule, decides how much each fact matters. Keystroke-level sessions plus
+feature snapshots are ~0.5-1 MB per day of heavy use: too much for one
+ever-growing text file, small for SQLite.
+
+Consequences:
+
+- `events.jsonl` is imported into the new store and then retired; `usage.json`
+  stays until usage moves into the store too.
+- The wire format is additive to contract v4 (ABI stays 4): `search_id` on
+  search replies and a `record_events` request that replaces
+  `record_selection` (specified in `swift/INTEGRATION.md`, 2026-10-15).
+
+Implementation notes, phase 1 Rust (2026-10-16), for the entry above:
+
+- `milky.sqlite3` (bundled SQLite via `rusqlite`, WAL, `synchronous=NORMAL`),
+  schema versioned by `PRAGMA user_version` with append-only migrations.
+  Tables: `destinations` (each result ID stored once), `sessions`,
+  `session_running_apps`, `session_events`, `searches`, `impressions`
+  (served rank, pool rank, and the features of `search::Features`), and
+  `selections` (from `record_selection`, and the imported `events.jsonl`,
+  which is then renamed `events.jsonl.imported`).
+- Every search gets an ID (`<engine start ms>-<counter>`, hex) and is kept in
+  memory (the last 512) with its shown results and its top 50 by rank, each
+  with features. Only searches a session reports as `rendered` are stored:
+  the decisive one (acted on, else last drawn) with its whole pool, others
+  with what they showed. Cost measured: 0-0.1 ms per search.
+- `record_events` derives usage from `action` events with outcome `opened`
+  and action open, reveal, or copy path; inspect and menu do not count.
+- `search::RANKER_VERSION` is stored with every search; bump it when ranking
+  rules change.
+- `MILKY_DATA_DIR` moves the engine's history elsewhere. Tests (Rust and
+  Swift) must set it or use a temporary folder: until 2026-10-16 the Rust
+  tests opened the real data folder (ISSUES).
+
+Implementation notes, phases 2 and 3 (2026-10-16), for the entry above:
+
+- Phase 2 was first planned for later; that was wrong for anything that only
+  exists if recorded when it happens (dwell, focus, last opened, folder
+  activity), so it was done at once. Phase 3 loses nothing by waiting, except
+  retention, needed before data turns 90 days old.
+- Last opened: the `com.apple.lastuseddate#PS` extended attribute (16 bytes,
+  seconds and nanoseconds since 1970, little-endian) is what Spotlight's
+  `kMDItemLastUsedDate` reads; `files::last_used` reads it with one
+  `getxattr` per entry during the walk. Opening a file rewrites it, so the
+  live index sees a change in that folder. 243 of 360 files in Downloads
+  had it. Walk time unchanged within noise.
+- Folder activity: the indexer counts changed paths per indexed folder per
+  batch (`Plan::changes`), stores the raw counts (`folder_activity`), and
+  keeps decayed scores (two-hour half-life, `activity.rs`). Served files and
+  folders carry their folder's and the whole area's score as features.
+- `record_focus` stores focus intervals (deduplicated by app and start);
+  `dwell` is a session event sent in a later report for the same session.
+- Schema version 2 adds these columns and tables; version 3 adds `settings`.
+  The real database upgraded in place, picks intact.
+- `milky --pause-history` / `--resume-history` (nothing about use is stored,
+  usage scores included), `--export PATH` (`VACUUM INTO`: Python reads the
+  copy with its own `sqlite3` module, so no other export format is needed),
+  `--forget-history all|DAYS` (all also resets usage scores).

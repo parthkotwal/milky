@@ -428,3 +428,32 @@ their made-up home folders.
 
 Lesson:
 Compare paths from the OS only after resolving links on both sides.
+
+---
+
+## 2026-10-16 — Tests wrote to the real data folder
+
+Status: resolved
+Area: rust-core
+
+Symptom:
+After adding the SQLite store, the user's real `events.jsonl` had already
+been imported and renamed before any launcher ran the new code: the test
+suite had done it.
+
+Cause:
+Thirteen engine tests and five FFI tests created engines with
+`Engine::new()` / `milky_engine_new()`, which use
+`~/Library/Application Support/Milky`. They had always read the real
+`usage.json`; with the store they also opened, migrated, and imported into
+the real database. No data was lost.
+
+Fix / workaround:
+`MILKY_DATA_DIR` overrides the data folder; Rust tests use temporary folders
+(`isolated_engine`, `isolated_engine_new`). Verified: a full `cargo test`
+leaves the real files' sizes and modification times unchanged.
+
+Lesson:
+Any test that builds the engine must use a temporary data folder. A schema
+migration under development must never run against real history by
+accident.

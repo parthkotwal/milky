@@ -103,7 +103,11 @@ learning-first). Swift adapter and linking — Swift owner.
   title). Additive, ABI stays 3; Swift ignores `match_kind`. Verified with
   `scripts/build.sh test`: 22 Swift tests pass.
 
-## Core request — 2026-10-13 (implemented)
+## Legacy core request — 2026-10-13 (implemented; superseded 2026-10-16)
+
+The `record_selection` implementation below is historical. Current Swift
+recording uses the session batch defined in “Interaction events — agreed
+2026-10-15”; Rust keeps this request for old clients.
 
 - Record a selection for every action taken on a result, not only Open:
   Reveal in Finder and Copy Path are choices of that result too. Use the same
@@ -147,6 +151,171 @@ same stable ID if it is still present. This changes no Rust or FFI contract.
 - `testRealEngineReturnsProjectSourceFiles` polls the same query until
   `files_ready: true` before asserting the indexed source. The behavior is
   covered with the current archive; an indexing status UI remains optional.
+
+## Interaction events — agreed 2026-10-15 (phase 1 wired)
+
+Authoritative intent: shared DECISIONS 2026-10-15, "Log interactions for
+learning". This is the wire format, phase 1. Additive to contract v4: the ABI
+stays 4. Core and Swift phase 1 are wired and verified against the real engine.
+
+### Search replies gain `search_id`
+
+`{"kind":"search","query":...,"results":[...],"files_ready":true,"search_id":"s1f"}`
+
+An opaque string, unique per engine. Keep it with the results it came with:
+every event about those results refers to it.
+
+### New request: `record_events`
+
+Send one per launcher session (from invocation to dismissal), when the session
+ends, off the main thread. It replaces `record_selection`: once Swift sends
+`record_events`, stop sending `record_selection` (the core derives usage from
+`action` events; sending both would count picks twice).
+
+```json
+{"op":"record_events","session":{
+  "session_id":"6F1C…",            // UUID string, made by Swift per session
+  "started_at_ms":1792040000000,   // Unix ms when the panel was invoked
+  "ended_at_ms":1792040004200,
+  "invocation":"hotkey",           // "hotkey" | "other"
+  "end":"action",                  // see below
+  "context":{
+    "frontmost_app":"app:/Applications/Ghostty.app",  // app in front before invoking; null if unknown
+    "running_apps":["app:/Applications/Ghostty.app","app:/Applications/Google Chrome.app"],
+                                   // NSRunningApplication with activationPolicy == .regular only
+    "timezone_offset_min":-420,    // local offset from UTC at invocation
+    "on_battery":false,            // null if unknown
+    "displays":2
+  },
+  "events":[
+    {"t_ms":0,   "type":"query", "query":""},
+    {"t_ms":180, "type":"query", "query":"s"},
+    {"t_ms":215, "type":"rendered", "search_id":"s1f", "visible":8},
+    {"t_ms":260, "type":"query", "query":"sa"},
+    {"t_ms":290, "type":"rendered", "search_id":"s20", "visible":8},
+    {"t_ms":700, "type":"highlight", "search_id":"s20", "result_id":"app:/Applications/Safari.app", "index":1},
+    {"t_ms":900, "type":"action", "action":"open", "search_id":"s20",
+     "result_id":"app:/Applications/Safari.app", "index":1, "outcome":"opened"}
+  ]
+}}
+```
+
+Reply: `{"kind":"recorded"}`, or `bad_request` with a message (log it; never
+block or retry in a loop).
+
+Events, `t_ms` = milliseconds since `started_at_ms`, in the order they happened:
+
+- `query`: the field's text after every change (typing, deleting, pasting,
+  Tab completion). The initial empty or restored text counts as the first one.
+- `rendered`: results for `search_id` were actually drawn; `visible` = how many
+  rows were on screen. A search whose results were superseded before drawing
+  is never `rendered`. Scrolling that reveals more rows: send another
+  `rendered` with the new `visible`.
+- `highlight`: the selected row changed (keyboard or pointer): `search_id`,
+  `result_id`, `index` (0-based row).
+- `tab_complete`: Tab accepted a completion: `search_id`, `result_id`; the
+  resulting text arrives as the next `query`.
+- `action`: the user acted on a result: `action` is `open` | `reveal` |
+  `copy_path` | `inspect` | `menu` (action menu opened); `search_id`,
+  `result_id`, `index`, `outcome` (`opened` | `failed`; `opened` for any
+  action that succeeded).
+
+`end`: `action` (closed after acting), `escape`, `click_away`, `app_switch`,
+`hotkey` (shortcut pressed again), `other`.
+
+Not to send: anything typed outside Milky's field, clipboard contents, window
+titles. Limits the core enforces: at most 2,000 events and 500 characters per
+query; IDs as in contract v4.
+
+**Core side wired 2026-10-16.** Search replies carry `search_id`
+(`"<hex start time>-<hex counter>"`, opaque); `record_events` is accepted and
+validated exactly as above; `record_selection` still works for older builds
+but should stop once sessions are sent. Searches are remembered for the last
+512 served, so send a session when it ends, not hours later. Usage counts
+`action` events with outcome `opened` for open, reveal, and copy_path;
+inspect and menu do not count.
+
+Tests that create a real engine must set `MILKY_DATA_DIR` to a temporary
+folder before the engine exists (for example `setenv` in the test class's
+setUp, before creating `RustSearchProvider`), so they never write to the
+user's history. Both the Rust and Swift bridge tests do this.
+
+### Phase 2 — agreed 2026-10-16 (Swift may start after phase 1)
+
+Two more things only Swift can observe. Same rules: send off the main thread,
+log failures, never block or retry in a loop.
+
+**Dwell after a pick.** After an `action` that opened something, keep watching
+the app that came to the front (the opened app, or the app that opened the
+file or setting) until the user leaves it, up to 30 minutes. Then send a
+further `record_events` for the same session: the same `session` header as
+before (`session_id`, times, invocation, end, context) with only the new
+event:
+
+```json
+{"t_ms":4300, "type":"dwell", "result_id":"app:/Applications/Safari.app",
+ "app":"app:/Applications/Safari.app", "front_ms":3400, "ended":"switched"}
+```
+
+- `t_ms`: when the dwell ended, ms since the session started.
+- `app`: the app that was in front (`null` if none came forward).
+- `front_ms`: how long it stayed in front, not counting idle time.
+- `ended`: `switched` (another app came forward), `hidden`, `quit`, `idle`
+  (no input for 2 minutes: the dwell ends at the last input), `sleep`
+  (screen sleep or lock), `limit` (30 minutes reached).
+
+**App focus intervals.** A resident observer
+(`NSWorkspace.didActivateApplicationNotification`) records which regular app
+is in front, all day, from launch to quit. Milky's own panel does not count.
+An interval ends when another app comes forward, after 2 minutes without
+keyboard or pointer input (ending at the last input, e.g.
+`CGEventSource.secondsSinceLastEventType`; a new interval starts when input
+returns), at screen sleep or lock, or when the app quits. Send them in
+batches, at least every 5 minutes and when Milky quits:
+
+```json
+{"op":"record_focus","intervals":[
+  {"app":"app:/Applications/Ghostty.app","started_at_ms":1792040000000,
+   "ended_at_ms":1792040312000,"ended_by":"switch"}
+]}
+```
+
+`ended_by`: `switch`, `idle`, `sleep`, `lock`, `quit`, `shutdown`. At most
+1,000 intervals per message, none longer than 24 hours. Reply
+`{"kind":"recorded"}`.
+
+**Core side wired 2026-10-16** for both: `dwell` events and `record_focus`
+are accepted, validated as above, and stored. While the user has paused
+history (`milky --pause-history`, a launcher setting later), every recording
+request still answers `{"kind":"recorded"}` but nothing is stored.
+
+**Swift phase 1 wired 2026-10-16.** `RustSearchProvider.searchResponse` retains
+the opaque `search_id` with each response; `LauncherState` associates visible,
+highlight, Tab-completion, and action events with that ID. A native session
+recorder captures the initial/restored query, edited queries, visible row counts
+from the results viewport, selection changes, accepted completions, action
+outcomes, invocation/end reasons, and invocation context. On dismissal it
+encodes one batch and calls `record_events` asynchronously. It no longer sends
+`record_selection`; explicit fixture/design modes do not persist events. Local
+Rust integration tests confirm a live search ID and successful session-batch
+acknowledgement. Battery state is currently sent as `null` (unknown); click-away
+is an agreed end value, but the current panel has no distinct click-away close
+path.
+
+**Swift phase 2 wired 2026-10-16.** In real mode, the resident app-activity
+observer records foreground regular-app intervals from launch until quit,
+excluding Milky. It closes intervals on app switches, two minutes without
+keyboard/pointer input (at the last input time), screen sleep, session lock,
+app quit, and shutdown; it sends completed intervals in batches of at most
+1,000 and flushes on a five-minute timer and at shutdown. It queries only
+system idle durations and never captures input content. After a successful
+Open or Reveal, it waits for the external foreground app and sends a second
+`record_events` batch for the same session when that dwell ends by switch,
+hide, quit, idle, sleep/lock, or the 30-minute limit. The dwell batch preserves
+the original session header. Fixture/design modes remain excluded. JSON
+serialization and real-engine round trips for dwell, focus, and session batches
+pass in isolated test storage. The resident live-activation, idle, lock, and
+sleep paths have not yet been dogfooded in a running launcher.
 
 ## Agreed integration
 
@@ -212,6 +381,10 @@ places, and contract v4". Swift-side summary:
   selection, its result cap, and ranking.
 
 ### Selection events — agreed and wired 2026-10-08
+
+This is the legacy phase-0 contract. It remains accepted by Rust for older
+clients. Swift stopped sending it on 2026-10-16 when phase-1 `record_events`
+landed; use the section above for current recording behavior.
 
 Authoritative text: shared [`../DECISIONS.md`](../DECISIONS.md), "Selection
 events and durable usage history". Swift-side summary:

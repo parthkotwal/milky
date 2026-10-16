@@ -5,11 +5,12 @@ import MilkyNative
 struct SearchSnapshot: Sendable {
     let results: [AppResult]
     let filesReady: Bool
+    let searchID: String?
 }
 
 /// All handle access is actor-isolated. No pointer escapes and no unchecked
 /// Sendable conformance is needed. Synchronous requests finish before shutdown.
-public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
+public actor RustSearchProvider: SearchProvider, InteractionEventRecording {
     private var engine: EngineHandle?
     private var closed = false
     private let limit: Int
@@ -25,6 +26,11 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
         try await searchSnapshot(query: query).results
     }
 
+    public func searchResponse(query: String) async throws -> SearchResponse {
+        let snapshot = try await searchSnapshot(query: query)
+        return SearchResponse(results: snapshot.results, searchID: snapshot.searchID)
+    }
+
     func searchSnapshot(query: String) async throws -> SearchSnapshot {
         try Task.checkCancellation()
         try prepare()
@@ -34,10 +40,18 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
         return try Self.decodeSearchSnapshot(copied, expectedQuery: query)
     }
 
-    public func recordSelection(_ event: MilkyNative.SelectionEvent) async throws {
+    public func recordEvents(_ session: InteractionSession) async throws {
         try Task.checkCancellation()
         try prepare()
-        let request = try JSONEncoder().encode(RecordSelectionRequest(event: event))
+        let request = try JSONEncoder().encode(RecordEventsRequest(session: session))
+        let copied = try engine!.request(request)
+        try Self.validateRecorded(copied)
+    }
+
+    public func recordFocus(_ intervals: [InteractionFocusInterval]) async throws {
+        try Task.checkCancellation()
+        try prepare()
+        let request = try JSONEncoder().encode(RecordFocusRequest(intervals: intervals))
         let copied = try engine!.request(request)
         try Self.validateRecorded(copied)
     }
@@ -109,7 +123,8 @@ public actor RustSearchProvider: SearchProvider, SelectionEventRecording {
                 // Before the live index contract, a successful reply contained the
                 // complete synchronous search set. Treat a missing additive field
                 // as ready for compatibility with that response shape.
-                return SearchSnapshot(results: values, filesReady: reply.filesReady ?? true)
+                guard reply.searchID?.isEmpty != true else { throw BridgeError.invalidResponse }
+                return SearchSnapshot(results: values, filesReady: reply.filesReady ?? true, searchID: reply.searchID)
             default: throw BridgeError.invalidResponse
             }
         } catch let error as BridgeError { throw error }
@@ -123,33 +138,19 @@ private struct SearchRequest: Encodable {
     let limit: Int
 }
 
-private struct RecordSelectionRequest: Encodable {
-    let op = "record_selection"
-    let query: String
-    let shown: [String]
-    let selected: String
-    let outcome: String
-
-    init(event: MilkyNative.SelectionEvent) {
-        query = event.query
-        shown = event.shown
-        selected = event.selected
-        outcome = event.outcome.rawValue
-    }
-}
-
 private struct Reply: Decodable {
     let kind: String
     let query: String?
     let results: [Item]?
     let filesReady: Bool?
-    // `record_selection` success has kind `recorded` and no other fields.
+    let searchID: String?
+    // `recorded` success has kind `recorded` and no other fields.
     let reason: String?
     let message: String?
 
     private enum CodingKeys: String, CodingKey {
         case kind, query, results, reason, message
-        case filesReady = "files_ready"
+        case filesReady = "files_ready", searchID = "search_id"
     }
 
     struct Item: Decodable {

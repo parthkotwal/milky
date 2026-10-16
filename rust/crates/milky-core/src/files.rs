@@ -22,6 +22,9 @@ pub struct FileEntry {
     pub is_folder: bool,
     /// When the contents last changed, if the filesystem says.
     pub modified: Option<SystemTime>,
+    /// When it was last opened, as macOS records it (see [`last_used`]).
+    /// `None` if it never was, through Finder or an app.
+    pub last_used: Option<SystemTime>,
 }
 
 /// Everything one or more walks found.
@@ -201,7 +204,8 @@ pub fn read_folder(dir: &Path, exclusions: &Exclusions) -> std::io::Result<Vec<F
         } else {
             false
         };
-        entries.push(FileEntry { path, is_folder, modified });
+        let last_used = last_used(&path);
+        entries.push(FileEntry { path, is_folder, modified, last_used });
     }
     Ok(entries)
 }
@@ -224,6 +228,74 @@ pub fn discover_files(home: &Path, exclusions: &Exclusions) -> Walk {
         all.unreadable.extend(found.unreadable);
     }
     all
+}
+
+/// When `path` was last opened, as macOS records it: the
+/// `com.apple.lastuseddate#PS` extended attribute, 16 bytes of seconds and
+/// nanoseconds since 1970, little-endian. It is what Spotlight's "Last
+/// opened" reads (`kMDItemLastUsedDate`), stored on the file itself, so one
+/// system call reads it, and opening a file changes it, which the live index
+/// sees as a change in that folder.
+pub fn last_used(path: &Path) -> Option<SystemTime> {
+    imp::last_used(path)
+}
+
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::ffi::{CString, c_char, c_int, c_void};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    unsafe extern "C" {
+        fn getxattr(
+            path: *const c_char,
+            name: *const c_char,
+            value: *mut c_void,
+            size: usize,
+            position: u32,
+            options: c_int,
+        ) -> isize;
+    }
+
+    /// Read the attribute of a symbolic link itself, never its target.
+    const XATTR_NOFOLLOW: c_int = 0x0001;
+
+    pub fn last_used(path: &Path) -> Option<SystemTime> {
+        let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+        let mut value = [0u8; 16];
+        // SAFETY: both strings are NUL-terminated and live for the call;
+        // `value` is a writable buffer of exactly the size passed.
+        let read = unsafe {
+            getxattr(
+                path.as_ptr(),
+                c"com.apple.lastuseddate#PS".as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+                0,
+                XATTR_NOFOLLOW,
+            )
+        };
+        if read < 16 {
+            return None;
+        }
+        let seconds = i64::from_le_bytes(value[..8].try_into().ok()?);
+        let nanos = i64::from_le_bytes(value[8..].try_into().ok()?);
+        if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
+            return None;
+        }
+        Some(UNIX_EPOCH + Duration::new(seconds as u64, nanos as u32))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod imp {
+    use std::path::Path;
+    use std::time::SystemTime;
+
+    pub fn last_used(_path: &Path) -> Option<SystemTime> {
+        None
+    }
 }
 
 /// Names starting with a dot are hidden by convention.
@@ -513,6 +585,27 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["notes.txt", "school"]);
         assert!(read_folder(&root.join("missing"), &Exclusions::default()).is_err());
+    }
+
+    #[test]
+    fn the_last_used_date_is_read_from_the_file() {
+        let root = scratch("last-used");
+        touch(&root.join("opened.pdf"));
+        touch(&root.join("never.pdf"));
+        // 2026-04-21 20:41:20 UTC (0x69E7E0F0 seconds), as macOS writes it.
+        let status = std::process::Command::new("xattr")
+            .args(["-wx", "com.apple.lastuseddate#PS", "F0E0E76900000000 93C7DE2000000000"])
+            .arg(root.join("opened.pdf"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let opened = last_used(&root.join("opened.pdf")).expect("a last-used date");
+        let seconds = opened.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert_eq!(seconds, 0x69E7_E0F0);
+        assert_eq!(last_used(&root.join("never.pdf")), None);
+        let walked = walked(&root);
+        let entry = walked.entries.iter().find(|entry| entry.path.ends_with("opened.pdf")).unwrap();
+        assert_eq!(entry.last_used, Some(opened), "the walk records it");
     }
 
     #[test]

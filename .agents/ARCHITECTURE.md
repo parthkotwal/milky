@@ -87,9 +87,18 @@ A query (`search.rs`, ~0.2-0.35 ms here):
    unless nothing else fills the list; `with_typed_folder` adds the folder the
    query named on the way to a file.
 
-Selections arrive as `record_selection` messages and are appended to
-`events.jsonl` and folded into `usage.json` (`events.rs`, `usage.rs`,
-`storage.rs`) in `~/Library/Application Support/Milky/`.
+Interactions are stored in `milky.sqlite3` (`store.rs`) in
+`~/Library/Application Support/Milky/`: every search gets an ID and is kept in
+memory with its results, its top 50 candidates, and their features; when the
+launcher reports a session (`record_events`: query states, drawn searches,
+highlights, actions, how it ended, context), the drawn searches are stored
+with it and picks update `usage.json` (decayed scores that break ranking
+ties). The store also holds app focus intervals (`record_focus`), dwell after
+picks, and per-folder change counts from the indexer; served files carry when
+they were last opened (macOS's `com.apple.lastuseddate#PS` attribute) and how
+busy their folders are (`activity.rs`). `milky --export`, `--pause-history`,
+and `--forget-history` manage it; `MILKY_DATA_DIR` points all of this
+elsewhere, for tests.
 
 ## Runtime components
 
@@ -129,8 +138,9 @@ The current integration uses an in-process Rust static library, a handwritten
 C header, and a SwiftPM system-library target. The engine/search contract (DECISIONS
 2026-09-13) is implemented, now at ABI version 4 (contract v4): five C functions, JSON
 request/response messages through `Engine::handle_json`, and concurrent calls
-allowed. Swift search and selection-event adapters use the same boundary.
-Selection events are stored locally by the Rust engine. Swift-side coordination lives in
+allowed. Swift search and per-session interaction-event adapters use the same
+boundary. Rust stores the session timeline and search impressions locally.
+Swift-side coordination lives in
 `.agents/swift/INTEGRATION.md`; cross-language decisions remain shared.
 
 ### Background indexer
@@ -319,13 +329,14 @@ This constraint is intentional and should influence model size, inference strate
 
 ## Open architectural decisions
 
-Decided so far: the selection event schema (DECISIONS 2026-10-08), the
+Decided so far: the phase-1 interaction event schema (DECISIONS 2026-10-15), the
 filesystem discovery policy (2026-10-08), and app, places, and System Settings
 sources. Still to decide:
 
 - how the file index is built off the startup path and kept fresh (threads,
   FSEvents), and whether it is persisted;
-- impressions and dismissals in the event log (only selections today);
+- post-pick dwell, focus intervals, retention/export, and privacy controls for
+  interaction history;
 - exact lexical index implementation for document contents (an inverted
   index; names are scanned linearly at ~5k);
 - exact vector index implementation;

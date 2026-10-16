@@ -8,6 +8,23 @@ Keep entries concise. Remove or move completed items when they no longer help fu
 
 ## Now
 
+- [ ] Interaction logging, phase 1 (DECISIONS 2026-10-15). Rust done
+      2026-10-16: SQLite store, `search_id`, impressions with features,
+      `record_events`, `events.jsonl` imported, `milky --log`. Swift (in
+      progress): session timeline and context sent as `record_events`, then
+      stop sending `record_selection`; set `MILKY_DATA_DIR` in tests that
+      create a real engine.
+- [ ] Interaction logging, phase 2 (Rust done 2026-10-16: last-opened dates,
+      folder activity, `record_focus`, `dwell` events). Swift: dwell after a
+      pick and the focus-interval observer with idle/sleep/lock detection
+      (`swift/INTEGRATION.md`, phase 2).
+- [ ] Interaction logging, phase 3: export, pause, and delete are done
+      (`milky --export`, `--pause-history`, `--forget-history`). Retention
+      must land before the first sessions turn 90 days old (about
+      2027-01-14): keep full detail 90 days, then compact (design: which
+      summaries keep their value). Pause and delete in the launcher's UI
+      (Swift, later).
+
 ## Soon
 
 - [ ] Offline ranking evaluation: replay `events.jsonl` queries against the

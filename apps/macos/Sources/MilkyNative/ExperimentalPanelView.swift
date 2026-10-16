@@ -1040,28 +1040,37 @@ private extension ExperimentalPanelView {
             }
             .padding(14)
             Rectangle().fill(palette.rule).frame(height: 1)
-            ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
-                let highlighted = state.selectedActionIndex == index
-                Button { Task { await state.chooseMenuAction(action) } } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: actionSymbol(action)).frame(width: 19)
-                        Text(actionLabel(action, for: result))
-                        Spacer(minLength: 1)
-                        if highlighted { Image(systemName: "return") }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 5) {
+                        ForEach(Array(state.menuActions.enumerated()), id: \.element) { index, action in
+                            let highlighted = state.selectedActionIndex == index
+                            Button { Task { await state.chooseMenuAction(action) } } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: actionSymbol(action)).frame(width: 19)
+                                    Text(actionLabel(action, for: result))
+                                    Spacer(minLength: 1)
+                                    if highlighted { Image(systemName: "return") }
+                                }
+                                .font(.system(size: 12, weight: highlighted ? .semibold : .medium))
+                                .foregroundStyle(palette.ink)
+                                .padding(.horizontal, 10)
+                                .frame(height: 47)
+                                .background(highlighted ? palette.raised : .clear,
+                                            in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(highlighted ? .isSelected : [])
+                            .padding(.horizontal, 8)
+                            .id(index)
+                        }
                     }
-                    .font(.system(size: 12, weight: highlighted ? .semibold : .medium))
-                    .foregroundStyle(palette.ink)
-                    .padding(.horizontal, 10)
-                    .frame(height: 47)
-                    .background(highlighted ? palette.raised : .clear,
-                                in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.top, 5)
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(highlighted ? .isSelected : [])
-                .padding(.horizontal, 8)
-                .padding(.top, 5)
+                .onChange(of: state.selectedActionIndex, initial: true) { _, index in
+                    proxy.scrollTo(index, anchor: .center)
+                }
             }
-            Spacer(minLength: 0)
         }
         .background(palette.surface, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16)

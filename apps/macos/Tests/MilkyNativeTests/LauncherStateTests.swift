@@ -3,12 +3,13 @@ import XCTest
 @testable import MilkyNative
 
 private actor ControlledSearch: SearchProvider {
-    private var pending: [String: CheckedContinuation<[AppResult], any Error>] = [:]
+    private var pending: [String: CheckedContinuation<SearchResponse, any Error>] = [:]
     func search(query: String) async throws -> [AppResult] {
-        try await withCheckedThrowingContinuation { pending[query] = $0 }
+        try await searchResponse(query: query).results
     }
+    func searchResponse(query: String) async throws -> SearchResponse { try await withCheckedThrowingContinuation { pending[query] = $0 } }
     func contains(_ query: String) -> Bool { pending[query] != nil }
-    func succeed(_ query: String, _ results: [AppResult]) { pending.removeValue(forKey: query)?.resume(returning: results) }
+    func succeed(_ query: String, _ results: [AppResult]) { pending.removeValue(forKey: query)?.resume(returning: SearchResponse(results: results, searchID: "search-\(query)")) }
     func fail(_ query: String) { pending.removeValue(forKey: query)?.resume(throwing: FixtureError.unavailable) }
 }
 
@@ -19,12 +20,6 @@ private actor ControlledSearch: SearchProvider {
         opened.append(result.id)
         if fails { throw FixtureError.unavailable }
     }
-}
-
-private actor SelectionRecorder: SelectionEventRecording {
-    private(set) var events: [SelectionEvent] = []
-    func recordSelection(_ event: SelectionEvent) async throws { events.append(event) }
-    func recordedEvents() -> [SelectionEvent] { events }
 }
 
 @MainActor final class LauncherStateTests: XCTestCase {
@@ -146,28 +141,21 @@ private actor SelectionRecorder: SelectionEventRecording {
         XCTAssertNil(state.errorMessage)
     }
 
-    func testRecordsShownResultsAndActionOutcomeAfterAttempt() async throws {
+    func testTabCompletionReportsSearchAndResultBeforeNextQuery() async throws {
         let provider = ControlledSearch()
-        let opener = RecordingOpener()
-        let recorder = SelectionRecorder()
-        let state = LauncherState(provider: provider, opener: opener, eventRecorder: recorder)
-        state.setQuery("idle")
-        try await waitFor { await provider.contains("idle") }
-        await provider.succeed("idle", [first, second])
+        let state = LauncherState(provider: provider, opener: RecordingOpener())
+        var completed: (String, String)?
+        var queries: [String] = []
+        state.onTabComplete = { completed = ($0, $1) }
+        state.onQueryChanged = { queries.append($0) }
+        state.setQuery("i")
+        try await waitFor { await provider.contains("i") }
+        await provider.succeed("i", [first, second])
         try await waitFor { !state.isSearching }
-        state.select(second.id)
-
-        opener.fails = true
-        await state.openSelected()
-        try await waitFor { await recorder.recordedEvents().count == 1 }
-        let failedEvent = await recorder.recordedEvents()[0]
-        XCTAssertEqual(failedEvent, SelectionEvent(query: "idle", shown: ["app:/one/IDLE.app", "app:/two/IDLE.app"], selected: "app:/two/IDLE.app", outcome: .failed))
-
-        opener.fails = false
-        await state.openSelected()
-        try await waitFor { await recorder.recordedEvents().count == 2 }
-        let openedEvent = await recorder.recordedEvents()[1]
-        XCTAssertEqual(openedEvent.outcome, .opened)
+        XCTAssertTrue(state.acceptInlineSuggestion())
+        XCTAssertEqual(completed?.0, "search-i")
+        XCTAssertEqual(completed?.1, first.id)
+        XCTAssertEqual(queries, ["i", "IDLE"])
     }
 
     func testNativeIconIsBoundedAndMissingIconUsesFallback() async throws {

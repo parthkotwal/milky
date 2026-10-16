@@ -25,6 +25,14 @@ inspected through Quick Look; secondary actions are available from the keyboard.
       the query with Tab, and show the result's icon at the trailing edge.
 - [x] Adopt ABI 4 folder/file result kinds and the typed `open` path action;
       open destinations natively and use their Finder icons.
+- [x] Replace per-action `record_selection` with phase-1 `record_events`:
+      retain search IDs, collect query/render/highlight/Tab/action/session
+      context and end reason, and send one async batch at dismissal. JSON shape
+      and a real Rust search/batch round trip pass (2026-10-16).
+- [x] Implement phase-2 successful-pick dwell follow-up on the same session and
+      resident foreground-app intervals via `record_focus`; handle switch,
+      idle, hide, quit, sleep/lock, shutdown, and the dwell limit. Wire shapes
+      and real-engine round trips pass in isolated storage (2026-10-16).
 
 Status: native app-search foundation complete. The remaining checks below are
 quality follow-ups; they do not block the next product capability.
@@ -42,13 +50,12 @@ quality follow-ups; they do not block the next product capability.
 
 ## Soon
 
-- [x] Integrate `record_selection` through the agreed Rust contract after each
-      real open attempt; fixtures remain excluded from persistence.
+- [x] Integrate the legacy `record_selection` contract; superseded by the
+      phase-1 session batch implementation above.
 - [x] Choose the hybrid mixed-result panel; add Quick Look file inspection and
       a keyboard-accessible native action menu from existing URLs.
-- [x] Record Reveal and Copy choices through `record_selection`, and report
-      recorder failures to the local usage log without blocking action feedback
-      (core request, 2026-10-13).
+- [x] Record Reveal and Copy choices through `record_selection`; session action
+      events now preserve their outcomes without duplicate counts.
 - [x] Preserve the previous query/results when reopening, select the query for
       immediate replacement, and refresh Rust ranking without losing a still
       available selected result (2026-10-13).
@@ -62,6 +69,9 @@ quality follow-ups; they do not block the next product capability.
       the normal launcher without changing Rust ranking or discovery.
 - [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
       behavior; record only concrete failures in ISSUES.md.
+- [ ] Populate battery context when a reliable native power-source signal is
+      available, and distinguish click-away from app-switch dismissal if a
+      click-away close path is added.
 - [ ] Add previews and secondary actions when a core result type supplies them.
 
 ## Later
@@ -261,9 +271,37 @@ to the implemented invocation behavior.
   shortcuts. Do not treat those timeouts as proof of the shortcut acceptance
   criteria; see ISSUES.md.
 
-The native search, primary open, and first selection-event wiring are complete.
-Next work is focused dogfooding of file inspection, native secondary actions,
-and launcher behavior across displays and accessibility settings.
+The native search and action foundation and phase-1/phase-2 interaction-event
+recording are implemented. Manual dogfooding still covers physical mouse,
+VoiceOver, displays, Spaces, accessibility settings, and the live foreground,
+idle, lock, and sleep observer paths.
+
+## QA evidence — 2026-10-16 — Phase-1 interaction batches
+
+- `apps/macos/scripts/build.sh test` passes 37 tests. New coverage checks the
+  documented JSON field names and null context values, initial/restored and
+  edited queries, completion/action events, opaque Rust search IDs, and a real
+  `record_events` acknowledgement from the linked engine.
+- Real launcher sessions now send one asynchronous batch when dismissed;
+  fixtures do not persist. Termination waits for its final batch before closing
+  the Rust engine. No live panel interaction was exercised in this pass.
+- Battery context remains unknown (`null`), and current dismissal has no
+  distinct click-away path.
+
+## QA evidence — 2026-10-16 — Phase-2 dwell and app focus
+
+- `apps/macos/scripts/build.sh test` passes 39 tests. New checks assert the
+  dwell report reuses the complete original session header and contains only
+  the dwell event, including explicit `app: null`; focus intervals serialize
+  the agreed `record_focus` fields. The linked Rust engine accepts a first
+  session report, its same-session dwell follow-up, and a focus interval.
+- Focus observation starts only in real launcher mode, ignores Milky, and
+  records app identity and timestamps without collecting input contents.
+  Session, dwell, and focus writes share an ordered async queue, drained before
+  the Rust engine shuts down. Tests use the bridge suite's temporary
+  `MILKY_DATA_DIR`; no user history is written.
+- No live launcher interaction was performed. App switches, dwell completion,
+  idle cutoff/resume, hide/quit, lock, and screen sleep need focused dogfooding.
 
 ## QA evidence — 2026-10-09 — Hybrid panel and file actions
 

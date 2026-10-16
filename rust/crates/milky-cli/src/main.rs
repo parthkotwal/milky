@@ -29,6 +29,13 @@ USAGE:
                               timing, unreadable folders, largest folders
     milky --watch             keep the engine running and print each index
                               update as files change (Ctrl-C to stop)
+    milky --log               what the event store holds, and recent sessions
+    milky --pause-history     stop recording use (searches still work)
+    milky --resume-history    start recording again
+    milky --export PATH       write a consistent copy of the event store
+    milky --forget-history all|DAYS
+                              delete recorded history: all of it (usage
+                              scores too), or the last DAYS days
 
 OPTIONS:
     --limit N                 maximum results (default 10)
@@ -109,6 +116,14 @@ fn main() -> ExitCode {
         watch(&engine);
     }
 
+    if options.log {
+        return show_log(&engine);
+    }
+
+    if let Some(history) = options.history {
+        return change_history(&engine, history);
+    }
+
     match options.query {
         Some(query) => {
             run_query(&engine, &query, options.limit);
@@ -125,7 +140,17 @@ struct Options {
     settings: bool,
     files: bool,
     watch: bool,
+    log: bool,
+    history: Option<History>,
     help: bool,
+}
+
+/// A change to the recorded history, from the command line.
+enum History {
+    Pause,
+    Resume,
+    Export(std::path::PathBuf),
+    Forget(Option<u64>),
 }
 
 impl Options {
@@ -136,6 +161,8 @@ impl Options {
         let mut settings = false;
         let mut files = false;
         let mut watch = false;
+        let mut log = false;
+        let mut history = None;
         let mut words: Vec<&str> = Vec::new();
 
         let mut rest = args.iter();
@@ -154,6 +181,20 @@ impl Options {
                 "--settings" => settings = true,
                 "--files" => files = true,
                 "--watch" => watch = true,
+                "--log" => log = true,
+                "--pause-history" => history = Some(History::Pause),
+                "--resume-history" => history = Some(History::Resume),
+                "--export" => {
+                    let path = rest.next().ok_or("--export needs a path")?;
+                    history = Some(History::Export(path.into()));
+                }
+                "--forget-history" => {
+                    let what = rest.next().ok_or("--forget-history needs `all` or a number of days")?;
+                    history = Some(History::Forget(match what.as_str() {
+                        "all" => None,
+                        days => Some(days.parse().map_err(|_| format!("bad --forget-history value '{days}'"))?),
+                    }));
+                }
                 "-h" | "--help" => help = true,
                 other if other.starts_with('-') => {
                     return Err(format!("unknown option '{other}'"));
@@ -177,6 +218,8 @@ impl Options {
             settings,
             files,
             watch,
+            log,
+            history,
             help,
         })
     }
@@ -379,5 +422,57 @@ fn watch(engine: &Engine) -> ! {
             println!("  - {id}");
         }
         last = current;
+    }
+}
+
+/// Print what the event store holds and the most recent sessions.
+fn show_log(engine: &Engine) -> ExitCode {
+    let Some((counts, sessions)) = engine.log_summary(10) else {
+        eprintln!("the event store could not be opened");
+        return ExitCode::FAILURE;
+    };
+    println!(
+        "sessions {}  events {}  searches {}  impressions {}  selections {}  focus intervals {}  folder activity {}",
+        counts.sessions,
+        counts.events,
+        counts.searches,
+        counts.impressions,
+        counts.selections,
+        counts.focus_intervals,
+        counts.folder_activity
+    );
+    for session in sessions {
+        println!(
+            "  {}  {:<10} {:>3} events  last query {:?}  acted on {}",
+            session.started_at_ms,
+            session.end_reason,
+            session.events,
+            session.last_query.unwrap_or_default(),
+            session.acted_on.unwrap_or_else(|| "-".to_string()),
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn change_history(engine: &Engine, history: History) -> ExitCode {
+    let result = match &history {
+        History::Pause => engine.set_paused(true).map(|()| "history paused".to_string()),
+        History::Resume => engine.set_paused(false).map(|()| "history resumed".to_string()),
+        History::Export(path) => engine.export_history(path).map(|()| format!("exported to {}", path.display())),
+        History::Forget(None) => engine.forget_history(None).map(|()| "all history forgotten".to_string()),
+        History::Forget(Some(days)) => {
+            let since = std::time::SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+            engine.forget_history(Some(since)).map(|()| format!("the last {days} days forgotten"))
+        }
+    };
+    match result {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
     }
 }

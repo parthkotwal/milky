@@ -110,6 +110,19 @@ fn into_c_string(text: String) -> *mut c_char {
 
 #[cfg(test)]
 mod tests {
+    /// `milky_engine_new` with history in a temporary folder, never the
+    /// user's: sets `MILKY_DATA_DIR` once, before any test creates an engine.
+    fn isolated_engine_new() -> *mut MilkyEngine {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("milky-ffi-tests-{}", std::process::id()));
+            // SAFETY: runs once, before any engine (the only reader of this
+            // variable) exists; every test passes through here first.
+            unsafe { std::env::set_var(milky_core::engine::DATA_DIR_VARIABLE, dir) };
+        });
+        milky_engine_new()
+    }
+
     use super::*;
     use serde_json::Value;
 
@@ -128,7 +141,7 @@ mod tests {
 
     #[test]
     fn create_search_and_free() {
-        let engine = milky_engine_new();
+        let engine = isolated_engine_new();
         assert!(!engine.is_null());
         let v = unsafe {
             take(milky_engine_request(
@@ -149,7 +162,7 @@ mod tests {
 
     #[test]
     fn null_request_is_a_bad_request_response() {
-        let engine = milky_engine_new();
+        let engine = isolated_engine_new();
         let v = unsafe { take(milky_engine_request(engine, std::ptr::null())) };
         assert_eq!(v["reason"], "bad_request");
         unsafe { milky_engine_free(engine) };
@@ -164,7 +177,7 @@ mod tests {
 
     #[test]
     fn invalid_utf8_is_a_bad_request_response() {
-        let engine = milky_engine_new();
+        let engine = isolated_engine_new();
         let bytes: &[u8] = b"\xff\xfe\0";
         let v = unsafe { take(milky_engine_request(engine, bytes.as_ptr().cast())) };
         assert_eq!(v["reason"], "bad_request");
@@ -181,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_response_outlives_its_engine() {
-        let engine = milky_engine_new();
+        let engine = isolated_engine_new();
         let raw = unsafe {
             milky_engine_request(
                 engine,
@@ -195,7 +208,7 @@ mod tests {
 
     #[test]
     fn concurrent_requests_share_one_engine() {
-        let engine = milky_engine_new();
+        let engine = isolated_engine_new();
         // Raw pointers are not Send; pass the address, as a foreign caller would.
         let address = engine as usize;
         let threads: Vec<_> = (0..8)

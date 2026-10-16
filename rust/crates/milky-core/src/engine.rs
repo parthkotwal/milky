@@ -1,11 +1,14 @@
 //! The long-lived search engine.
 
 use std::path::{Path, PathBuf};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::api::{Outcome, SelectionEvent};
-use crate::events::{self, LoggedSelection};
+use crate::activity::FolderActivity;
+use crate::api::{FocusRequest, Outcome, SelectionEvent, SessionEvent, SessionReport};
+use crate::events;
 use crate::storage;
 use crate::usage::{self, UsageStore};
 
@@ -20,6 +23,7 @@ use crate::files::FileEntry;
 use crate::indexer::Indexer;
 use crate::places::{self, Place};
 use crate::search::{self, Hit};
+use crate::store::{ServedResult, ServedSearch, Store};
 use crate::settings::{self, SettingsPane};
 
 /// One immutable view of everything searchable.
@@ -146,7 +150,35 @@ pub struct Engine {
     indexer: Option<Indexer>,
     usage: Mutex<UsageStore>,
     usage_path: PathBuf,
-    events_path: PathBuf,
+    /// The event store; `None` if it could not be opened, in which case
+    /// searching still works and recording requests answer with an error.
+    /// Shared with the indexer, which records folder activity.
+    store: Arc<Mutex<Option<Store>>>,
+    /// How busy each folder has been lately, counted by the indexer and read
+    /// into the features of served files.
+    activity: Arc<Mutex<FolderActivity>>,
+    /// Recently served searches, kept until a session says they were drawn.
+    recent: Mutex<VecDeque<ServedSearch>>,
+    /// Makes search IDs unique across runs: this engine's start time, then a
+    /// counter.
+    started_ms: u64,
+    next_search: AtomicU64,
+}
+
+/// Environment variable that moves the engine's history (usage, event store)
+/// to another folder.
+pub const DATA_DIR_VARIABLE: &str = "MILKY_DATA_DIR";
+
+/// How many candidates beyond the visible results each search remembers for
+/// learning: the alternatives a learned ranker chooses between.
+pub const POOL_SIZE: usize = 50;
+
+/// How many served searches are remembered until a session reports them.
+/// A session draws a few per keystroke; this covers many sessions.
+const RECENT_SEARCHES: usize = 512;
+
+fn now_ms(now: SystemTime) -> u64 {
+    now.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64)
 }
 
 // `Default` implies a cheap, obvious value, and `new` does about 60 ms of disk
@@ -155,8 +187,15 @@ pub struct Engine {
 #[allow(clippy::new_without_default)]
 impl Engine {
     /// Build an engine, discovering installed apps and System Settings once.
+    ///
+    /// History lives in `~/Library/Application Support/Milky`, or in
+    /// `$MILKY_DATA_DIR` if set: tests and experiments must never write to the
+    /// real store. The launcher never sets it.
     pub fn new() -> Self {
-        let dir = storage::data_dir().unwrap_or_else(|_| std::env::temp_dir().join("Milky"));
+        let dir = std::env::var_os(DATA_DIR_VARIABLE)
+            .map(PathBuf::from)
+            .or_else(|| storage::data_dir().ok())
+            .unwrap_or_else(|| std::env::temp_dir().join("Milky"));
         Self::with_data_dir(&dir)
     }
 
@@ -168,16 +207,26 @@ impl Engine {
     /// work at once on everything but files; the indexer adds files.
     pub fn with_sources(dir: &Path, sources: Sources) -> Self {
         let usage_path = dir.join(usage::FILE_NAME);
-        let events_path = dir.join(events::FILE_NAME);
-        let (store, _damaged) = UsageStore::load_or_quarantine(&usage_path, SystemTime::now());
+        let (usage, _damaged) = UsageStore::load_or_quarantine(&usage_path, SystemTime::now());
+        let store = Arc::new(Mutex::new(open_store(dir)));
+        let activity = Arc::new(Mutex::new(FolderActivity::default()));
         let snapshots = Arc::new(Snapshots::new(Index::new(sources.candidates(&[]), false)));
-        let indexer = Some(Indexer::start(Arc::clone(&snapshots), sources));
+        let indexer = Some(Indexer::start(
+            Arc::clone(&snapshots),
+            sources,
+            Arc::clone(&store),
+            Arc::clone(&activity),
+        ));
         Self {
             snapshots,
             indexer,
-            usage: Mutex::new(store),
+            usage: Mutex::new(usage),
             usage_path,
-            events_path,
+            store,
+            activity,
+            recent: Mutex::new(VecDeque::with_capacity(RECENT_SEARCHES)),
+            started_ms: now_ms(SystemTime::now()),
+            next_search: AtomicU64::new(0),
         }
     }
 
@@ -248,6 +297,50 @@ impl Engine {
         })
     }
 
+    /// Search and remember what was served (results, pool, features) under a
+    /// new search ID, so a later `record_events` can store what was drawn.
+    fn serve(&self, query: &str, limit: usize) -> (String, Vec<crate::api::ResultItem>, bool) {
+        let started = Instant::now();
+        let index = self.index();
+        let now = SystemTime::now();
+        let served = {
+            let store = self.lock_usage();
+            search::search_with_pool(index.candidates(), &normalize_query(query), limit, POOL_SIZE, |id| {
+                store.score(id, now)
+            })
+        };
+        let results = served.shown.iter().filter_map(result_item).collect();
+        let latency_us = started.elapsed().as_micros() as u64;
+        let search_id = format!("{:x}-{:x}", self.started_ms, self.next_search.fetch_add(1, Ordering::Relaxed));
+        let activity = self.activity.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let record = |hits: &[Hit]| -> Vec<ServedResult> {
+            hits.iter()
+                .map(|hit| ServedResult {
+                    result_id: hit.candidate.id.clone(),
+                    kind: hit.candidate.kind,
+                    features: search::features(hit, now, &activity),
+                })
+                .collect()
+        };
+        let remembered = ServedSearch {
+            search_id: search_id.clone(),
+            served_at_ms: now_ms(now),
+            query: query.to_string(),
+            latency_us,
+            files_ready: index.files_ready,
+            ranker_version: search::RANKER_VERSION,
+            shown: record(&served.shown),
+            pool: record(&served.pool),
+        };
+        drop(activity);
+        let mut recent = self.recent.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if recent.len() == RECENT_SEARCHES {
+            recent.pop_front();
+        }
+        recent.push_back(remembered);
+        (search_id, results, index.files_ready)
+    }
+
     /// Ask the indexer to re-discover apps and walk all files again, as at
     /// startup. Returns at once; the new snapshot is published when ready.
     /// Changes are normally followed live, so this is for recovery and tools.
@@ -268,30 +361,161 @@ impl Engine {
         self.lock_usage().score(id, now)
     }
 
+    /// Whether recording is paused: nothing about use is stored, usage
+    /// scores included.
+    fn paused(&self) -> bool {
+        let store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        store.as_ref().is_some_and(|store| store.paused().unwrap_or(false))
+    }
+
+    /// Pause or resume recording.
+    pub fn set_paused(&self, paused: bool) -> Result<(), String> {
+        let mut store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let store = store.as_mut().ok_or("the event store could not be opened")?;
+        store.set_paused(paused).map_err(|err| err.to_string())
+    }
+
+    /// Write a consistent copy of the event store to `path`.
+    pub fn export_history(&self, path: &Path) -> Result<(), String> {
+        let store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let store = store.as_ref().ok_or("the event store could not be opened")?;
+        store.export_to(path).map_err(|err| err.to_string())
+    }
+
+    /// Delete recorded history, everything or since `since`, and with all of
+    /// it the usage scores ranking learned from it.
+    pub fn forget_history(&self, since: Option<SystemTime>) -> Result<(), String> {
+        {
+            let mut store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let store = store.as_mut().ok_or("the event store could not be opened")?;
+            store.forget(since.map(now_ms)).map_err(|err| err.to_string())?;
+        }
+        if since.is_none() {
+            let mut usage = self.lock_usage();
+            *usage = UsageStore::new();
+            usage.save(&self.usage_path).map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     fn record_selection(&self, event: SelectionEvent, now: SystemTime) -> Response {
         if let Err(message) = event.validate() {
-            return Response::Error(ErrorResponse {
-                reason: ErrorReason::BadRequest,
-                message,
-            });
+            return bad_request(message);
         }
-        let mut store = self.lock_usage();
-        if let Err(err) = events::append(&self.events_path, &LoggedSelection::new(&event, now)) {
-            return Response::Error(ErrorResponse {
-                reason: ErrorReason::Internal,
-                message: format!("could not record selection: {err}"),
-            });
+        if self.paused() {
+            return Response::Recorded;
+        }
+        if let Err(response) = self.with_store(|store| store.record_selection(now_ms(now), &event)) {
+            return response;
         }
         if event.outcome == Outcome::Opened {
-            store.record_launch(&event.selected, now);
-        }
-        if let Err(err) = store.save(&self.usage_path) {
-            return Response::Error(ErrorResponse {
-                reason: ErrorReason::Internal,
-                message: format!("could not save usage history: {err}"),
-            });
+            return self.record_uses(&[event.selected.as_str()], now);
         }
         Response::Recorded
+    }
+
+    /// Store one session and the searches it drew, then count what the user
+    /// opened, revealed, or copied as use.
+    fn record_events(&self, report: SessionReport, now: SystemTime) -> Response {
+        if let Err(message) = report.validate() {
+            return bad_request(message);
+        }
+        if self.paused() {
+            return Response::Recorded;
+        }
+        let drawn = self.drawn_searches(&report);
+        let pairs: Vec<(&ServedSearch, bool)> = drawn.iter().map(|(search, decisive)| (search, *decisive)).collect();
+        if let Err(response) = self.with_store(|store| store.record_session(&report, &pairs, now_ms(now))) {
+            return response;
+        }
+        let used: Vec<&str> = report
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Action { action, outcome: Outcome::Opened, result_id, .. } if action.counts_as_use() => {
+                    Some(result_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if used.is_empty() {
+            return Response::Recorded;
+        }
+        self.record_uses(&used, now)
+    }
+
+    /// Store a batch of app focus intervals.
+    fn record_focus(&self, request: FocusRequest, now: SystemTime) -> Response {
+        if let Err(message) = request.validate() {
+            return bad_request(message);
+        }
+        if self.paused() {
+            return Response::Recorded;
+        }
+        match self.with_store(|store| store.record_focus(&request, now_ms(now))) {
+            Ok(()) => Response::Recorded,
+            Err(response) => response,
+        }
+    }
+
+    /// The remembered searches a session drew, each with whether it was
+    /// decisive: the search of the last action, or else the last one drawn.
+    /// Searches no longer remembered (served too long ago) are left out.
+    fn drawn_searches(&self, report: &SessionReport) -> Vec<(ServedSearch, bool)> {
+        let mut drawn: Vec<&str> = Vec::new();
+        for event in &report.events {
+            if let SessionEvent::Rendered { search_id, .. } = event
+                && !drawn.contains(&search_id.as_str())
+            {
+                drawn.push(search_id);
+            }
+        }
+        let decisive = report
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                SessionEvent::Action { search_id, .. } => Some(search_id.as_str()),
+                _ => None,
+            })
+            .or(drawn.last().copied());
+        let recent = self.recent.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        drawn
+            .iter()
+            .filter_map(|id| recent.iter().find(|search| search.search_id == *id))
+            .map(|search| (search.clone(), Some(search.search_id.as_str()) == decisive))
+            .collect()
+    }
+
+    /// Count each of `ids` as one use now, and save the usage history.
+    fn record_uses(&self, ids: &[&str], now: SystemTime) -> Response {
+        let mut usage = self.lock_usage();
+        for id in ids {
+            usage.record_launch(id, now);
+        }
+        match usage.save(&self.usage_path) {
+            Ok(()) => Response::Recorded,
+            Err(err) => internal(format!("could not save usage history: {err}")),
+        }
+    }
+
+    /// Run `write` on the event store, turning failure into an error response.
+    fn with_store(
+        &self,
+        write: impl FnOnce(&mut Store) -> Result<(), crate::store::StoreError>,
+    ) -> Result<(), Response> {
+        let mut store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match store.as_mut() {
+            Some(store) => write(store).map_err(|err| internal(format!("could not record: {err}"))),
+            None => Err(internal("the event store could not be opened".to_string())),
+        }
+    }
+
+    /// How much the event store holds, and its most recent sessions.
+    pub fn log_summary(&self, sessions: usize) -> Option<(crate::store::Counts, Vec<crate::store::SessionSummary>)> {
+        let store = self.store.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let store = store.as_ref()?;
+        Some((store.counts().ok()?, store.recent_sessions(sessions).ok()?))
     }
 
     /// Handle one serialized request and return a serialized response.
@@ -302,19 +526,12 @@ impl Engine {
     pub fn handle_json(&self, request_json: &str) -> String {
         let response = match serde_json::from_str::<Request>(request_json) {
             Ok(Request::Search(req)) => {
-                let index = self.index();
-                let results = self
-                    .search(&index, &req.query, req.limit)
-                    .iter()
-                    .filter_map(result_item)
-                    .collect();
-                Response::Search(SearchResponse {
-                    query: req.query,
-                    results,
-                    files_ready: index.files_ready,
-                })
+                let (search_id, results, files_ready) = self.serve(&req.query, req.limit);
+                Response::Search(SearchResponse { query: req.query, search_id, results, files_ready })
             }
             Ok(Request::RecordSelection(event)) => self.record_selection(event, SystemTime::now()),
+            Ok(Request::RecordEvents(request)) => self.record_events(request.session, SystemTime::now()),
+            Ok(Request::RecordFocus(request)) => self.record_focus(request, SystemTime::now()),
             Err(err) => Response::Error(ErrorResponse {
                 reason: ErrorReason::BadRequest,
                 message: format!("could not parse request: {err}"),
@@ -338,6 +555,28 @@ impl Drop for Engine {
             indexer.stop();
         }
     }
+}
+
+fn bad_request(message: String) -> Response {
+    Response::Error(ErrorResponse { reason: ErrorReason::BadRequest, message })
+}
+
+fn internal(message: String) -> Response {
+    Response::Error(ErrorResponse { reason: ErrorReason::Internal, message })
+}
+
+/// Open the event store in `dir`, importing the old `events.jsonl` log the
+/// first time (it is then renamed `events.jsonl.imported`, so it is imported
+/// once and kept). `None` if the store cannot be opened.
+fn open_store(dir: &Path) -> Option<Store> {
+    let mut store = Store::open(&dir.join(crate::store::FILE_NAME)).ok()?;
+    let old_log = dir.join(events::FILE_NAME);
+    if let Ok(text) = std::fs::read_to_string(&old_log)
+        && store.import_selections(&text).is_ok()
+    {
+        let _ = std::fs::rename(&old_log, dir.join(format!("{}.imported", events::FILE_NAME)));
+    }
+    Some(store)
 }
 
 /// The user's exclusions (`exclusions.txt`, created with the defaults if
@@ -365,13 +604,13 @@ mod tests {
 
     #[test]
     fn new_indexes_the_machines_apps() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         assert!(engine.app_count() > 0, "expected to find installed apps");
     }
 
     #[test]
     fn finds_terminal_by_prefix() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         let index = engine.index();
         let found = engine.search(&index, "term", 10);
         assert!(
@@ -385,7 +624,7 @@ mod tests {
     fn engine_normalizes_raw_user_input() {
         // Capitals and stray whitespace, as actually typed. `search::search` alone
         // would return nothing for this.
-        let engine = Engine::new();
+        let engine = isolated_engine();
         let index = engine.index();
         let found = engine.search(&index, "  TERM  ", 10);
         assert!(
@@ -397,13 +636,13 @@ mod tests {
 
     #[test]
     fn respects_the_limit() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         assert!(engine.search(&engine.index(), "a", 3).len() <= 3);
     }
 
     #[test]
     fn reindexing_leaves_the_engine_usable() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         let before = engine.app_count();
         engine.reindex();
         assert_eq!(engine.app_count(), before);
@@ -648,7 +887,7 @@ mod tests {
 
     #[test]
     fn search_round_trips_through_json() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         let v = ask(&engine, r#"{"op":"search","query":"term","limit":5}"#);
         assert_eq!(v["kind"], "search");
         assert_eq!(v["query"], "term");
@@ -673,7 +912,7 @@ mod tests {
 
     #[test]
     fn no_matches_is_an_empty_search_not_an_error() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         let v = ask(
             &engine,
             r#"{"op":"search","query":"zzqqxxnomatch","limit":5}"#,
@@ -684,39 +923,47 @@ mod tests {
 
     #[test]
     fn json_search_respects_the_limit() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         let v = ask(&engine, r#"{"op":"search","query":"a","limit":2}"#);
         assert!(v["results"].as_array().unwrap().len() <= 2);
     }
 
     #[test]
     fn malformed_json_is_a_bad_request() {
-        let v = ask(&Engine::new(), "definitely not json");
+        let v = ask(&isolated_engine(), "definitely not json");
         assert_eq!(v["kind"], "error");
         assert_eq!(v["reason"], "bad_request");
     }
 
     #[test]
     fn unknown_op_is_a_bad_request() {
-        let v = ask(&Engine::new(), r#"{"op":"teleport"}"#);
+        let v = ask(&isolated_engine(), r#"{"op":"teleport"}"#);
         assert_eq!(v["kind"], "error");
         assert_eq!(v["reason"], "bad_request");
     }
 
     #[test]
     fn missing_limit_is_a_bad_request() {
-        let v = ask(&Engine::new(), r#"{"op":"search","query":"term"}"#);
+        let v = ask(&isolated_engine(), r#"{"op":"search","query":"term"}"#);
         assert_eq!(v["kind"], "error");
         assert_eq!(v["reason"], "bad_request");
     }
 
     #[test]
     fn error_responses_carry_exactly_one_kind_key() {
-        let raw = Engine::new().handle_json("not json");
+        let raw = isolated_engine().handle_json("not json");
         assert_eq!(raw.matches(r#""kind""#).count(), 1, "got {raw}");
     }
 
     const SAFARI: &str = "app:/Applications/Safari.app";
+
+    /// An engine over this Mac's real apps, settings, and files, keeping its
+    /// history in a fresh temporary folder, never the user's.
+    fn isolated_engine() -> Engine {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Engine::with_data_dir(&temp_data_dir(&format!("isolated-{n}")))
+    }
 
     fn temp_data_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("milky-engine-{label}-{}", std::process::id()))
@@ -728,10 +975,9 @@ mod tests {
         )
     }
 
-    fn log_lines(dir: &Path) -> Vec<String> {
-        std::fs::read_to_string(dir.join(events::FILE_NAME))
-            .map(|text| text.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
+    /// The outcomes of the selections the engine has stored, oldest first.
+    fn stored_selections(engine: &Engine) -> Vec<String> {
+        engine.store.lock().unwrap().as_ref().expect("store open").selection_outcomes()
     }
 
     #[test]
@@ -740,7 +986,7 @@ mod tests {
         let engine = Engine::with_data_dir(&dir);
         assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
         assert!(engine.usage_score(SAFARI, SystemTime::now()) > 0.99);
-        assert_eq!(log_lines(&dir).len(), 1);
+        assert_eq!(stored_selections(&engine), vec!["opened"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -750,9 +996,7 @@ mod tests {
         let engine = Engine::with_data_dir(&dir);
         assert_eq!(ask(&engine, &selection_json("failed"))["kind"], "recorded");
         assert_eq!(engine.usage_score(SAFARI, SystemTime::now()), 0.0);
-        let lines = log_lines(&dir);
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains(r#""outcome":"failed""#), "{}", lines[0]);
+        assert_eq!(stored_selections(&engine), vec!["failed"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -778,7 +1022,7 @@ mod tests {
         );
         assert_eq!(v["reason"], "bad_request");
         assert!(!dir.join(usage::FILE_NAME).exists());
-        assert!(!dir.join(events::FILE_NAME).exists());
+        assert!(stored_selections(&engine).is_empty());
     }
 
     #[test]
@@ -794,10 +1038,183 @@ mod tests {
                 });
             }
         });
-        assert_eq!(log_lines(&dir).len(), 40);
+        assert_eq!(stored_selections(&engine).len(), 40);
         let score = engine.usage_score(SAFARI, SystemTime::now());
         assert!(score > 39.9 && score <= 40.0, "score {score}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An engine over one made-up app, Safari, with no files.
+    fn safari_engine(label: &str) -> (Engine, PathBuf) {
+        let dir = temp_data_dir(label);
+        let _ = std::fs::remove_dir_all(&dir);
+        let sources = Sources {
+            apps: vec![App::new(PathBuf::from("/Applications/Safari.app"), "Safari".to_string())],
+            ..files_only(None)
+        };
+        (Engine::with_sources(&dir, sources), dir)
+    }
+
+    fn search_id_for(engine: &Engine, query: &str) -> String {
+        let reply = ask(engine, &format!(r#"{{"op":"search","query":"{query}","limit":10}}"#));
+        reply["search_id"].as_str().expect("a search_id").to_string()
+    }
+
+    fn session_json(session_id: &str, search_id: &str, action: &str) -> String {
+        format!(
+            r#"{{"op":"record_events","session":{{"session_id":"{session_id}","started_at_ms":1000,"ended_at_ms":2000,
+               "invocation":"hotkey","end":"action",
+               "context":{{"frontmost_app":"app:/Applications/Ghostty.app","running_apps":[],"timezone_offset_min":-420,"on_battery":false,"displays":1}},
+               "events":[
+                 {{"t_ms":0,"type":"query","query":"saf"}},
+                 {{"t_ms":20,"type":"rendered","search_id":"{search_id}","visible":1}},
+                 {{"t_ms":300,"type":"action","action":"{action}","search_id":"{search_id}","result_id":"{SAFARI}","index":0,"outcome":"opened"}}
+               ]}}}}"#
+        )
+    }
+
+    fn counts(engine: &Engine) -> crate::store::Counts {
+        engine.log_summary(1).expect("store open").0
+    }
+
+    #[test]
+    fn every_search_reply_has_its_own_id() {
+        let (engine, _dir) = safari_engine("search-ids");
+        let first = search_id_for(&engine, "saf");
+        let second = search_id_for(&engine, "saf");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_session_stores_what_it_drew_and_counts_the_pick() {
+        let (engine, _dir) = safari_engine("session");
+        let search_id = search_id_for(&engine, "saf");
+        assert_eq!(ask(&engine, &session_json("one", &search_id, "open"))["kind"], "recorded");
+        let counts = counts(&engine);
+        assert_eq!((counts.sessions, counts.events, counts.searches), (1, 3, 1));
+        assert_eq!(counts.impressions, 1, "Safari, shown and in the pool");
+        let stored = engine.store.lock().unwrap().as_ref().unwrap().impressions_of(&search_id);
+        assert_eq!(stored, vec![(SAFARI.to_string(), Some(0), Some(0))]);
+        assert!(engine.usage_score(SAFARI, SystemTime::now()) > 0.99);
+    }
+
+    #[test]
+    fn revealing_counts_as_use_and_inspecting_does_not() {
+        let (engine, _dir) = safari_engine("reveal");
+        let search_id = search_id_for(&engine, "saf");
+        assert_eq!(ask(&engine, &session_json("a", &search_id, "inspect"))["kind"], "recorded");
+        assert_eq!(engine.usage_score(SAFARI, SystemTime::now()), 0.0);
+        assert_eq!(ask(&engine, &session_json("b", &search_id, "reveal"))["kind"], "recorded");
+        assert!(engine.usage_score(SAFARI, SystemTime::now()) > 0.99);
+    }
+
+    #[test]
+    fn a_search_no_longer_remembered_still_lets_the_session_be_stored() {
+        let (engine, _dir) = safari_engine("forgotten");
+        assert_eq!(ask(&engine, &session_json("one", "never-served", "open"))["kind"], "recorded");
+        let counts = counts(&engine);
+        assert_eq!((counts.sessions, counts.searches), (1, 0));
+    }
+
+    #[test]
+    fn a_malformed_session_stores_nothing() {
+        let (engine, _dir) = safari_engine("bad-session");
+        let bad = session_json("one", "x", "open").replace(r#""ended_at_ms":2000"#, r#""ended_at_ms":10"#);
+        assert_eq!(ask(&engine, &bad)["reason"], "bad_request");
+        assert_eq!(counts(&engine).sessions, 0);
+    }
+
+    #[test]
+    fn the_old_selection_log_is_imported_once() {
+        let dir = temp_data_dir("import");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = r#"{"v":2,"event":"selection","at_ms":1,"query":"saf","shown":["app:/Applications/Safari.app"],"selected":"app:/Applications/Safari.app","outcome":"opened"}"#;
+        std::fs::write(dir.join(events::FILE_NAME), format!("{line}\n{line}\n")).unwrap();
+        {
+            let engine = Engine::with_sources(&dir, files_only(None));
+            assert_eq!(stored_selections(&engine).len(), 2);
+        }
+        assert!(!dir.join(events::FILE_NAME).exists());
+        assert!(dir.join("events.jsonl.imported").exists());
+        let reopened = Engine::with_sources(&dir, files_only(None));
+        assert_eq!(stored_selections(&reopened).len(), 2, "not imported twice");
+    }
+
+    #[test]
+    fn focus_intervals_are_recorded_and_bad_ones_rejected() {
+        let (engine, _dir) = safari_engine("focus");
+        let good = r#"{"op":"record_focus","intervals":[{"app":"app:/Applications/Ghostty.app","started_at_ms":1,"ended_at_ms":9,"ended_by":"idle"}]}"#;
+        assert_eq!(ask(&engine, good)["kind"], "recorded");
+        let bad = r#"{"op":"record_focus","intervals":[{"app":"Ghostty","started_at_ms":1,"ended_at_ms":9,"ended_by":"idle"}]}"#;
+        assert_eq!(ask(&engine, bad)["reason"], "bad_request");
+        assert_eq!(counts(&engine).focus_intervals, 1);
+    }
+
+    #[test]
+    fn served_files_carry_last_use_and_folder_activity() {
+        let home = temp_home("phase-two", &["notes/old.txt"]);
+        let engine = Engine::with_sources(&temp_data_dir("phase-two"), files_only(Some(home.clone())));
+        assert!(engine.wait_for_files(Duration::from_secs(10)));
+        // A new file, marked as opened in 2026-04: the live index sees the
+        // change, counts activity in `notes`, and reads the date.
+        let report = home.join("notes/quarterly-report.pdf");
+        std::fs::write(&report, b"").unwrap();
+        let status = std::process::Command::new("xattr")
+            .args(["-wx", "com.apple.lastuseddate#PS", "F0E0E76900000000 0000000000000000"])
+            .arg(&report)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(eventually(&engine, |engine, index| {
+            engine.search(index, "quarterly", 10).first().is_some_and(|hit| {
+                hit.candidate.file.as_ref().is_some_and(|facts| facts.last_used.is_some())
+            })
+        }));
+
+        let reply = ask(&engine, r#"{"op":"search","query":"quarterly","limit":10}"#);
+        let search_id = reply["search_id"].as_str().unwrap().to_string();
+        let result_id = reply["results"][0]["id"].as_str().unwrap().to_string();
+        let session = format!(
+            r#"{{"op":"record_events","session":{{"session_id":"p2","started_at_ms":1,"ended_at_ms":2,
+               "invocation":"hotkey","end":"escape","context":{{}},
+               "events":[{{"t_ms":0,"type":"rendered","search_id":"{search_id}","visible":1}}]}}}}"#
+        );
+        assert_eq!(ask(&engine, &session)["kind"], "recorded");
+        let (last_used_age, folder_activity): (Option<i64>, Option<f64>) = {
+            let store = engine.store.lock().unwrap();
+            let store = store.as_ref().unwrap();
+            store.impression_facts(&search_id, &result_id)
+        };
+        assert!(last_used_age.is_some_and(|age| age > 0), "last opened months ago: {last_used_age:?}");
+        assert!(folder_activity.is_some_and(|activity| activity > 0.0), "notes just changed: {folder_activity:?}");
+        assert!(counts(&engine).folder_activity > 0, "the raw counts are stored too");
+    }
+
+    #[test]
+    fn while_paused_nothing_about_use_is_recorded() {
+        let (engine, _dir) = safari_engine("paused");
+        engine.set_paused(true).unwrap();
+        let search_id = search_id_for(&engine, "saf");
+        assert_eq!(ask(&engine, &session_json("one", &search_id, "open"))["kind"], "recorded");
+        assert_eq!(ask(&engine, &selection_json("opened"))["kind"], "recorded");
+        assert_eq!(counts(&engine).sessions, 0);
+        assert!(stored_selections(&engine).is_empty());
+        assert_eq!(engine.usage_score(SAFARI, SystemTime::now()), 0.0, "usage is not learned either");
+        engine.set_paused(false).unwrap();
+        assert_eq!(ask(&engine, &session_json("two", &search_id, "open"))["kind"], "recorded");
+        assert_eq!(counts(&engine).sessions, 1);
+    }
+
+    #[test]
+    fn forgetting_everything_also_forgets_usage() {
+        let (engine, _dir) = safari_engine("forget");
+        let search_id = search_id_for(&engine, "saf");
+        assert_eq!(ask(&engine, &session_json("one", &search_id, "open"))["kind"], "recorded");
+        assert!(engine.usage_score(SAFARI, SystemTime::now()) > 0.99);
+        engine.forget_history(None).unwrap();
+        assert_eq!(counts(&engine).sessions, 0);
+        assert_eq!(engine.usage_score(SAFARI, SystemTime::now()), 0.0);
     }
 
     #[test]
@@ -843,7 +1260,7 @@ mod tests {
 
     #[test]
     fn settings_are_indexed_and_searchable() {
-        let engine = Engine::new();
+        let engine = isolated_engine();
         assert!(
             engine.settings_count() > 500,
             "only {} settings",

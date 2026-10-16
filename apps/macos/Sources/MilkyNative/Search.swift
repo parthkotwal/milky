@@ -55,29 +55,24 @@ public struct AppResult: Identifiable, Equatable, Sendable {
 
 public protocol SearchProvider: Sendable {
     func search(query: String) async throws -> [AppResult]
+    func searchResponse(query: String) async throws -> SearchResponse
 }
 
-public enum SelectionOutcome: String, Sendable {
-    case opened
-    case failed
-}
-
-public struct SelectionEvent: Sendable, Equatable {
-    public let query: String
-    public let shown: [String]
-    public let selected: String
-    public let outcome: SelectionOutcome
-
-    public init(query: String, shown: [String], selected: String, outcome: SelectionOutcome) {
-        self.query = query
-        self.shown = shown
-        self.selected = selected
-        self.outcome = outcome
+public extension SearchProvider {
+    func searchResponse(query: String) async throws -> SearchResponse {
+        SearchResponse(results: try await search(query: query), searchID: nil)
     }
 }
 
-public protocol SelectionEventRecording: Sendable {
-    func recordSelection(_ event: SelectionEvent) async throws
+public struct SearchResponse: Sendable {
+    public let results: [AppResult]
+    public let searchID: String?
+    public init(results: [AppResult], searchID: String?) { self.results = results; self.searchID = searchID }
+}
+
+public protocol InteractionEventRecording: Sendable {
+    func recordEvents(_ session: InteractionSession) async throws
+    func recordFocus(_ intervals: [InteractionFocusInterval]) async throws
 }
 
 /// A short diagnostic safe for local logs. It must not include a query or destination.

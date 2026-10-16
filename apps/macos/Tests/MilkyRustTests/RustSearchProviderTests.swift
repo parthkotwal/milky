@@ -1,7 +1,31 @@
 import XCTest
 @testable import MilkyRust
+import MilkyNative
+import Darwin
 
 @MainActor final class RustSearchProviderTests: XCTestCase {
+    private static let isolatedDataDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("MilkySwiftBridgeTests-\(UUID().uuidString)", isDirectory: true)
+    private static var previousDataDirectory: String?
+
+    override class func setUp() {
+        super.setUp()
+        MainActor.assumeIsolated {
+            previousDataDirectory = ProcessInfo.processInfo.environment["MILKY_DATA_DIR"]
+            try? FileManager.default.createDirectory(at: isolatedDataDirectory, withIntermediateDirectories: true)
+            setenv("MILKY_DATA_DIR", isolatedDataDirectory.path, 1)
+        }
+    }
+
+    override class func tearDown() {
+        MainActor.assumeIsolated {
+            if let previousDataDirectory { setenv("MILKY_DATA_DIR", previousDataDirectory, 1) }
+            else { unsetenv("MILKY_DATA_DIR") }
+            try? FileManager.default.removeItem(at: isolatedDataDirectory)
+        }
+        super.tearDown()
+    }
+
     func testRejectsUnsupportedABIBeforeEngineCreation() throws {
         XCTAssertNoThrow(try RustSearchProvider.validateVersion(4))
         XCTAssertThrowsError(try RustSearchProvider.validateVersion(3))
@@ -11,7 +35,9 @@ import XCTest
 
     func testRealEngineFindsInstalledAppsAndPreservesResultsAfterOtherRequests() async throws {
         let provider = RustSearchProvider(limit: 5)
-        let results = try await provider.search(query: "term")
+        let response = try await provider.searchResponse(query: "term")
+        let results = response.results
+        XCTAssertFalse(try XCTUnwrap(response.searchID).isEmpty)
         XCTAssertTrue(results.contains { $0.name == "Terminal" && $0.id == "app:/System/Applications/Utilities/Terminal.app" })
         XCTAssertLessThanOrEqual(results.count, 5)
         let none = try await provider.search(query: "zzqqxxnomatch")
@@ -49,6 +75,12 @@ import XCTest
         XCTAssertEqual(values.map(\.id), ["app:/第二/IDLE.app", "app:/first/IDLE.app"])
         XCTAssertEqual(values.map(\.name), ["IDLE", "IDLE"])
         XCTAssertEqual(values.map(\.subtitle), ["第二", "first"])
+    }
+
+    func testSearchResponseRetainsOpaqueSearchID() throws {
+        let data = Data(#"{"kind":"search","query":"x","results":[],"search_id":"opaque-1"}"#.utf8)
+        let snapshot = try RustSearchProvider.decodeSearchSnapshot(data, expectedQuery: "x")
+        XCTAssertEqual(snapshot.searchID, "opaque-1")
     }
 
     func testDecodeSettingsAndDiscriminatedActions() throws {
@@ -167,7 +199,7 @@ import XCTest
         await provider.shutdown()
     }
 
-    func testSelectionAcknowledgementAndErrorsAreValidated() throws {
+    func testEventBatchAcknowledgementAndErrorsAreValidated() throws {
         XCTAssertNoThrow(try RustSearchProvider.validateRecorded(Data(#"{"kind":"recorded"}"#.utf8)))
         let rejected = BridgeError.engine(reason: "bad_request", message: "failed at /Users/person/private/path")
         XCTAssertEqual(rejected.safeDiagnostic, "bad_request")
@@ -177,5 +209,27 @@ import XCTest
         }
         XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"search","query":"x","results":[]}"#.utf8)))
         XCTAssertThrowsError(try RustSearchProvider.validateRecorded(Data(#"{"kind":"error"}"#.utf8)))
+    }
+
+    func testRealEngineAcceptsDocumentedSessionBatch() async throws {
+        let provider = RustSearchProvider(limit: 5)
+        let response = try await provider.searchResponse(query: "safari")
+        let result = try XCTUnwrap(response.results.first)
+        let searchID = try XCTUnwrap(response.searchID)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let session = InteractionSession(sessionID: UUID().uuidString, startedAtMs: now,
+            endedAtMs: now + 100, invocation: "other", end: "action",
+            context: InteractionContext(frontmostApp: nil, runningApps: [], timezoneOffsetMin: 0, onBattery: nil, displays: 1),
+            events: [.query(t: 0, query: "safari"), .rendered(t: 20, searchID: searchID, visible: 1),
+                     .action(t: 100, action: "open", searchID: searchID, resultID: result.id, index: 0, outcome: "opened")])
+        try await provider.recordEvents(session)
+        let dwell = session.addingDwell(t: 250, resultID: result.id, app: "app:/Applications/Safari.app",
+                                        frontMS: 150, ended: "switched")
+        try await provider.recordEvents(dwell)
+        try await provider.recordFocus([
+            InteractionFocusInterval(app: "app:/Applications/Terminal.app", startedAtMs: now,
+                                     endedAtMs: now + 200, endedBy: "switch")
+        ])
+        await provider.shutdown()
     }
 }
