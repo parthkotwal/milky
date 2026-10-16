@@ -364,3 +364,19 @@ quit, or shutdown, and completed records are sent in bounded batches. Writes
 are ordered and drained before Rust shuts down. The wire formats and Rust
 acceptance are tested; live macOS activation and power/session notifications
 remain dogfooding checks.
+
+## 2026-10-16 — Keep Hybrid composition for the identity study
+
+Decision: Reject the porcelain, milk-glass, and opal layout experiments.
+Preserve Hybrid's hierarchy, spacing, keyboard behavior, inspection, and
+actions. Explore cow-inspired identity through one small static edge drawing,
+monochrome selection, and a limited pink accent in fixture mode only.
+
+Why: The prior concepts changed too much of the panel. The user identified its
+current simplicity as the baseline and specifically ruled out decorative
+materials and extra interface sections.
+
+Consequences: The old experimental view and `--concept` mode are removed.
+The three `--cow` studies reuse LauncherView and one identical result fixture.
+Normal Rust mode remains the chosen Hybrid until the user picks a visual
+treatment. Result ranking and discovery remain Rust-owned and unchanged.

@@ -13,8 +13,8 @@ struct MilkySnapshot {
             throw SnapshotError.activationPolicy
         }
 
-        let provider: any SearchProvider = options.concept == nil
-            ? FixtureSearchProvider() : DesignFixtureSearchProvider()
+        let provider: any SearchProvider = options.usesCowFixture
+            ? DesignFixtureSearchProvider() : FixtureSearchProvider()
         let state = LauncherState(provider: provider, opener: SnapshotOpener())
         if let previousQuery = options.previousQuery {
             state.setQuery(previousQuery)
@@ -45,13 +45,9 @@ struct MilkySnapshot {
         if let appearanceName = options.appearanceName {
             window.appearance = NSAppearance(named: appearanceName)
         }
-        let hostingView = NSHostingView(rootView: Group {
-            if let concept = options.concept {
-                ExperimentalPanelView(state: state, concept: concept, dismiss: {})
-            } else {
-                LauncherView(state: state, fixtures: true, design: options.design, dismiss: {})
-            }
-        })
+        let hostingView = NSHostingView(rootView:
+            LauncherView(state: state, fixtures: true, design: options.design,
+                         cowIdentity: options.cowIdentity, dismiss: {}))
         hostingView.frame = NSRect(origin: .zero, size: size)
         window.contentView = hostingView
         window.contentView?.layoutSubtreeIfNeeded()
@@ -114,7 +110,8 @@ private struct SnapshotOptions {
     let appearanceName: NSAppearance.Name?
     let captureDuringSearch: Bool
     let design: PanelDesign
-    let concept: VisualConcept?
+    let cowIdentity: CowIdentity?
+    let usesCowFixture: Bool
     let selectedTitle: String?
     let inspect: Bool
     let actions: Bool
@@ -127,7 +124,8 @@ private struct SnapshotOptions {
         var appearanceName: NSAppearance.Name?
         var captureDuringSearch = false
         var design: PanelDesign = .hybrid
-        var concept: VisualConcept?
+        var cowIdentity: CowIdentity?
+        var usesCowFixture = false
         var selectedTitle: String?
         var inspect = false
         var actions = false
@@ -169,9 +167,12 @@ private struct SnapshotOptions {
             case "--design":
                 guard let value = PanelDesign(rawValue: value) else { throw SnapshotError.usage }
                 design = value
-            case "--concept":
-                guard let value = VisualConcept(rawValue: value) else { throw SnapshotError.usage }
-                concept = value
+            case "--cow":
+                usesCowFixture = true
+                if value != "baseline" {
+                    guard let identity = CowIdentity(rawValue: value) else { throw SnapshotError.usage }
+                    cowIdentity = identity
+                }
             default: throw SnapshotError.usage
             }
             index += 2
@@ -183,7 +184,8 @@ private struct SnapshotOptions {
         self.appearanceName = appearanceName
         self.captureDuringSearch = captureDuringSearch
         self.design = design
-        self.concept = concept
+        self.cowIdentity = cowIdentity
+        self.usesCowFixture = usesCowFixture
         guard !(inspect && actions) else { throw SnapshotError.usage }
         self.selectedTitle = selectedTitle
         self.inspect = inspect
@@ -204,7 +206,7 @@ private enum SnapshotError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            return "Usage: milky-snapshot [--query TEXT] [--select TITLE] [--inspect|--actions] [--previous-query TEXT] [--during-search] [--design balanced|compact|guided|hybrid] [--concept porcelain|milk-glass|opal] [--appearance light|dark] [--width 360..1280] [--height 360..1000] [--output PATH]"
+            return "Usage: milky-snapshot [--query TEXT] [--select TITLE] [--inspect|--actions] [--previous-query TEXT] [--during-search] [--design balanced|compact|guided|hybrid] [--cow baseline|spot|ear|muzzle] [--appearance light|dark] [--width 360..1280] [--height 360..1000] [--output PATH]"
         case .activationPolicy:
             return "Could not set the snapshot process to a non-activating policy."
         case .bitmap:

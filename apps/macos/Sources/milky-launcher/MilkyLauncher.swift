@@ -31,16 +31,18 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
               let design = PanelDesign(rawValue: String(value)) else { return .hybrid }
         return design
     }
-    private var visualConcept: VisualConcept? {
+    private var cowStudy: String? {
         guard fixtures,
-              let value = CommandLine.arguments.first(where: { $0.hasPrefix("--concept=") })?.dropFirst("--concept=".count)
+              let value = CommandLine.arguments.first(where: { $0.hasPrefix("--cow=") })?.dropFirst("--cow=".count)
         else { return nil }
-        return VisualConcept(rawValue: String(value))
+        let argument = String(value)
+        return argument == "baseline" || CowIdentity(rawValue: argument) != nil ? argument : nil
     }
+    private var cowIdentity: CowIdentity? { cowStudy.flatMap(CowIdentity.init(rawValue:)) }
     private let rust = RustSearchProvider()
     private lazy var state: LauncherState = {
         let provider: any SearchProvider
-        if visualConcept != nil { provider = DesignFixtureSearchProvider() }
+        if cowStudy != nil { provider = DesignFixtureSearchProvider() }
         else if fixtures { provider = FixtureSearchProvider() }
         else { provider = rust }
         return LauncherState(provider: provider, opener: NativeAppOpener())
@@ -107,17 +109,12 @@ private final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowD
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         panel.dismissAction = { [weak self] in self?.dismissOrClose() }
-        panel.contentView = NSHostingView(rootView: Group {
-            if let concept = visualConcept {
-                ExperimentalPanelView(state: state, concept: concept) { [weak self] in
-                    self?.dismissOrClose()
-                }
-            } else {
-                LauncherView(state: state, fixtures: fixtures, design: panelDesign) { [weak self] in
-                    self?.dismissOrClose()
-                }
+        panel.contentView = NSHostingView(rootView:
+            LauncherView(state: state, fixtures: fixtures, design: panelDesign,
+                         cowIdentity: cowIdentity) { [weak self] in
+                self?.dismissOrClose()
             }
-        })
+        )
         if CommandLine.arguments.contains("--appearance=light") { panel.appearance = NSAppearance(named: .aqua) }
         if CommandLine.arguments.contains("--appearance=dark") { panel.appearance = NSAppearance(named: .darkAqua) }
         state.onOpened = { [weak self] in

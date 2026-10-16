@@ -31,23 +31,33 @@ enum LauncherTheme {
 
 public struct LauncherView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var state: LauncherState
     let dismiss: () -> Void
     let fixtures: Bool
     let design: PanelDesign
+    let cowIdentity: CowIdentity?
 
     public init(state: LauncherState, fixtures: Bool = true, design: PanelDesign = .hybrid,
+                cowIdentity: CowIdentity? = nil,
                 dismiss: @escaping () -> Void) {
         self.state = state
         self.fixtures = fixtures
         self.design = design
+        self.cowIdentity = cowIdentity
         self.dismiss = dismiss
+    }
+
+    private var cowPalette: CowPalette { CowPalette(dark: colorScheme == .dark) }
+    private var secondaryColor: Color { cowIdentity == nil ? LauncherTheme.secondary : cowPalette.secondary }
+    private var panelSurface: Color {
+        cowIdentity == nil ? Color(nsColor: .windowBackgroundColor) : cowPalette.surface
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: design == .compact ? 9 : 12) {
-                Image(systemName: "magnifyingglass").font(.system(size: 22)).foregroundStyle(LauncherTheme.secondary)
+                Image(systemName: "magnifyingglass").font(.system(size: 22)).foregroundStyle(secondaryColor)
                 QueryField(value: Binding(get: { state.query }, set: { state.setQuery($0) }),
                            enabled: !state.isOpening, up: { state.moveSelection(-1) },
                            down: { state.moveSelection(1) }, submit: open, dismiss: dismissOrClose,
@@ -74,7 +84,7 @@ public struct LauncherView: View {
                     Text("TOP MATCH")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .tracking(0.8)
-                        .foregroundStyle(LauncherTheme.secondary)
+                        .foregroundStyle(secondaryColor)
                         .frame(width: 84, alignment: .leading)
                     ResultIcon(result: suggestion).frame(width: 22, height: 22)
                     suggestionButton(suggestion, inline: false)
@@ -109,47 +119,29 @@ public struct LauncherView: View {
                     Spacer()
                 }
                 .font(LauncherTheme.subtitle)
-                .foregroundStyle(LauncherTheme.secondary)
+                .foregroundStyle(secondaryColor)
                 .padding(.horizontal, LauncherTheme.inset)
                 .padding(.vertical, 7)
             }
             Divider()
-            HStack(spacing: design == .compact ? 10 : 14) {
-                if fixtures {
-                    Label("Fixtures", systemImage: "testtube.2")
-                        .help("Development fixtures only. No Rust search or usage recording.")
-                } else {
-                    Label("Local Results", systemImage: "square.grid.2x2")
-                }
-                Spacer()
-                if state.actionMenuResultID != nil {
-                    Text("↑↓ Choose")
-                    Text("↵ Run")
-                    Text("esc Back")
-                } else if state.inspectedResultID != nil {
-                    Text("↵ Open")
-                    Text("esc Back")
-                } else {
-                    if design != .compact { Text("↑↓ Navigate") }
-                    if state.selected?.kind == .file {
-                        Button("⌘P Inspect") { state.toggleInspection() }
-                            .buttonStyle(.plain).disabled(!state.canOpen)
-                    }
-                    if state.selected != nil {
-                        Button("⌘K Actions") { state.toggleActionMenu() }
-                            .buttonStyle(.plain).disabled(!state.canOpen)
-                    }
-                    Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : LauncherTheme.secondary)
-                    Text("esc Close")
-                }
+            GeometryReader { geometry in
+                footer(compact: geometry.size.width < 520)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .font(LauncherTheme.hint).foregroundStyle(LauncherTheme.secondary)
-            .padding(.horizontal, LauncherTheme.inset)
-            .padding(.vertical, design == .compact ? 8 : 11)
+            .frame(height: design == .compact ? 31 : 37)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(panelSurface)
         .clipShape(RoundedRectangle(cornerRadius: LauncherTheme.corner))
         .overlay(RoundedRectangle(cornerRadius: LauncherTheme.corner).strokeBorder(.primary.opacity(0.12)))
+        .overlay(alignment: .topTrailing) {
+            if let cowIdentity {
+                CowEdgeMotif(identity: cowIdentity, palette: cowPalette)
+                    .frame(width: 56, height: 14)
+                    .padding(.top, 6)
+                    .padding(.trailing, 43)
+            }
+        }
+        .tint(cowIdentity == nil ? .accentColor : cowPalette.ink)
         .onChange(of: state.errorMessage) { _, message in
             if let message { announce(message) }
         }
@@ -158,6 +150,45 @@ public struct LauncherView: View {
                 announce("No matching results")
             }
         }
+    }
+
+    private func footer(compact: Bool) -> some View {
+        HStack(spacing: compact ? 10 : design == .compact ? 10 : 14) {
+            if fixtures {
+                Label("Fixtures", systemImage: "testtube.2")
+                    .help("Development fixtures only. No Rust search or usage recording.")
+            } else {
+                Label("Local Results", systemImage: "square.grid.2x2")
+            }
+            Spacer(minLength: 4)
+            if state.actionMenuResultID != nil {
+                if !compact { Text("↑↓ Choose") }
+                Text("↵ Run")
+                Text("esc Back")
+            } else if state.inspectedResultID != nil {
+                Text("↵ Open")
+                Text("esc Back")
+            } else {
+                if !compact && design != .compact { Text("↑↓ Navigate") }
+                if state.selected?.kind == .file {
+                    Button(compact ? "⌘P" : "⌘P Inspect") { state.toggleInspection() }
+                        .buttonStyle(.plain).disabled(!state.canOpen)
+                        .accessibilityLabel("Inspect selected file")
+                        .help("Inspect file (Command P)")
+                }
+                if state.selected != nil {
+                    Button(compact ? "⌘K" : "⌘K Actions") { state.toggleActionMenu() }
+                        .buttonStyle(.plain).disabled(!state.canOpen)
+                        .accessibilityLabel("Show actions for selected result")
+                        .help("Show actions (Command K)")
+                }
+                Text("↵ Open").foregroundStyle(state.canOpen ? Color.primary : secondaryColor)
+                Text(compact ? "esc" : "esc Close")
+            }
+        }
+        .font(LauncherTheme.hint)
+        .foregroundStyle(secondaryColor)
+        .padding(.horizontal, LauncherTheme.inset)
     }
 
     private func suggestionButton(_ suggestion: AppResult, inline: Bool) -> some View {
@@ -174,7 +205,7 @@ public struct LauncherView: View {
                     .padding(.horizontal, 5).padding(.vertical, 3)
                     .background(.primary.opacity(0.09), in: RoundedRectangle(cornerRadius: 5))
             }
-            .foregroundStyle(inline ? LauncherTheme.secondary : Color.primary)
+            .foregroundStyle(inline ? secondaryColor : Color.primary)
             .padding(.horizontal, inline ? 9 : 0)
             .padding(.vertical, inline ? 6 : 0)
             .background(inline ? Color.primary.opacity(0.055) : .clear,
@@ -202,10 +233,10 @@ public struct LauncherView: View {
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: emptySymbol)
-                        .font(.system(size: 30)).foregroundStyle(LauncherTheme.secondary)
+                        .font(.system(size: 30)).foregroundStyle(secondaryColor)
                     Text(emptyTitle).font(.system(size: 16, weight: .medium))
                     Text(emptySubtitle)
-                        .font(LauncherTheme.subtitle).foregroundStyle(LauncherTheme.secondary)
+                        .font(LauncherTheme.subtitle).foregroundStyle(secondaryColor)
                 }
                 .padding(24)
                 .transition(.opacity)
@@ -261,7 +292,7 @@ public struct LauncherView: View {
                         .font(.system(size: 16, weight: .semibold))
                         .lineLimit(1)
                     Text(result.subtitle).font(LauncherTheme.subtitle)
-                        .foregroundStyle(LauncherTheme.secondary)
+                        .foregroundStyle(secondaryColor)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer()
@@ -285,7 +316,8 @@ public struct LauncherView: View {
                     .font(LauncherTheme.title)
                     .padding(.horizontal, 14)
                     .frame(height: 46)
-                    .background(highlighted ? Color.accentColor.opacity(0.13) : .clear,
+                    .background(highlighted ? (cowIdentity == nil ? Color.accentColor.opacity(0.13)
+                                                                  : cowPalette.ink.opacity(0.11)) : .clear,
                                 in: RoundedRectangle(cornerRadius: 7))
                     .contentShape(Rectangle())
                 }
@@ -333,29 +365,45 @@ public struct LauncherView: View {
 
     private func row(_ result: AppResult) -> some View {
         let selected = state.selectedID == result.id
+        let inverted = selected && cowIdentity == .muzzle
+        let rowInk = inverted ? cowPalette.surface : (cowIdentity == nil ? Color.primary : cowPalette.ink)
+        let rowSecondary = inverted ? cowPalette.surface.opacity(0.78) : secondaryColor
         return HStack(spacing: design == .compact ? 9 : 12) {
-            ResultIcon(result: result).frame(width: design == .compact ? 26 : 32,
-                                             height: design == .compact ? 26 : 32)
+            ResultIcon(result: result, fallbackColor: rowSecondary)
+                .frame(width: design == .compact ? 26 : 32,
+                       height: design == .compact ? 26 : 32)
             VStack(alignment: .leading, spacing: design == .compact ? 1 : 3) {
-                Text(result.title).font(LauncherTheme.title).lineLimit(1)
+                Text(result.title).font(LauncherTheme.title).foregroundStyle(rowInk).lineLimit(1)
                 Text(result.subtitle).font(LauncherTheme.subtitle)
-                    .foregroundStyle(LauncherTheme.secondary).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(rowSecondary).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
             if design != .balanced {
                 Text(kindLabel(result.kind))
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(LauncherTheme.secondary)
+                    .foregroundStyle(rowSecondary)
                     .padding(.horizontal, 7).padding(.vertical, 4)
-                    .background(.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 5))
+                    .background(inverted ? cowPalette.surface.opacity(0.16) : Color.primary.opacity(0.055),
+                                in: RoundedRectangle(cornerRadius: 5))
             }
-            if selected { Image(systemName: "return").font(LauncherTheme.subtitle).foregroundStyle(LauncherTheme.secondary) }
+            if selected { Image(systemName: "return").font(LauncherTheme.subtitle).foregroundStyle(rowSecondary) }
         }
         .padding(.horizontal, 12)
         .frame(height: design == .compact ? 44 : design == .guided ? 58 : LauncherTheme.rowHeight)
-        .background(selected ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 7))
+        .background(selected ? selectedRowFill : .clear, in: RoundedRectangle(cornerRadius: 7))
+        .overlay {
+            if selected && cowIdentity == .ear {
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(cowPalette.ink, lineWidth: 1.5)
+            }
+        }
         .overlay(alignment: .leading) {
-            if selected { RoundedRectangle(cornerRadius: 2).fill(LauncherTheme.secondary).frame(width: 3, height: 24) }
+            if selected {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(cowIdentity == .ear || cowIdentity == .muzzle ? cowPalette.pink :
+                          cowIdentity == .spot ? cowPalette.ink : LauncherTheme.secondary)
+                    .frame(width: 3, height: 24)
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { state.select(result.id); open() }
@@ -366,6 +414,15 @@ public struct LauncherView: View {
         .accessibilityAddTraits(selected ? [.isSelected, .isButton] : [.isButton])
         .accessibilityAction { state.select(result.id); open() }
         .accessibilityAction(named: "Select") { state.select(result.id) }
+    }
+
+    private var selectedRowFill: Color {
+        switch cowIdentity {
+        case nil: Color.accentColor.opacity(0.13)
+        case .spot: cowPalette.ink.opacity(colorScheme == .dark ? 0.13 : 0.07)
+        case .ear: .clear
+        case .muzzle: cowPalette.ink
+        }
     }
 
     private func kindLabel(_ kind: ResultKind) -> String {
@@ -398,7 +455,12 @@ private struct ResultFramesKey: PreferenceKey {
 
 struct ResultIcon: View {
     let result: AppResult
+    let fallbackColor: Color
     @State private var image: NSImage?
+    init(result: AppResult, fallbackColor: Color = LauncherTheme.secondary) {
+        self.result = result
+        self.fallbackColor = fallbackColor
+    }
     var body: some View {
         Group {
             if let image { Image(nsImage: image).resizable() }
@@ -409,7 +471,7 @@ struct ResultIcon: View {
                 case .folder: "folder.fill"
                 case .file: "doc.fill"
                 }
-                Image(systemName: symbol).resizable().padding(5).foregroundStyle(LauncherTheme.secondary)
+                Image(systemName: symbol).resizable().padding(5).foregroundStyle(fallbackColor)
             }
         }
         .frame(width: 32, height: 32).accessibilityHidden(true)

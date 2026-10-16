@@ -1,6 +1,6 @@
 import Foundation
 
-/// One deterministic, real-path corpus for comparing visual concepts.
+/// One deterministic, real-path corpus for comparing the Hybrid identity studies.
 /// It never participates in normal Rust search or usage recording.
 public struct DesignFixtureSearchProvider: SearchProvider {
     public init() {}

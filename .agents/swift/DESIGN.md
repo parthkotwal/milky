@@ -192,27 +192,31 @@ occupies the same area with a Quick Look preview and Back control. Escape
 returns to the result list before dismissing the launcher. The query remains
 visible and editable; changing it closes either overlay immediately.
 
-## Material identity studies — 2026-10-14
+## Material identity studies — 2026-10-14, rejected 2026-10-16
 
-Three separate fixture-only compositions explore a broader identity while the
-chosen Hybrid panel remains the normal launcher view:
+The porcelain, milk-glass, and opal compositions explored different layouts
+and decorative materials. The user rejected all three. Their fixture-only view
+and `--concept` switch were removed. Keep Hybrid's layout and interaction.
 
-- `porcelain`: an editorial index, warm opaque surfaces, serif headings, and a
-  narrow identity rail. Search, results, inspection, and actions occupy the main
-  page in turn.
-- `milk-glass`: a search desk with a ranked list and persistent selected-item
-  pane. Inspection and actions replace the selected-item pane; the two columns
-  collapse to one at narrow widths.
-- `opal`: an intentionally bold composition with a large query vessel,
-  iridescent ring, numbered result cards, and a dark chamber appearance. Its
-  action list scrolls when the panel is short.
+## Minimal cow identity studies — 2026-10-16
 
-All three use the same deterministic `swift` fixture with real repo file and
-folder URLs plus an installed Xcode app. The Swift view shares LauncherState,
-the AppKit query field, Quick Look, and result actions. Reduced Motion disables
-its transition; Reduced Transparency removes decorative light effects without
-removing the opaque text surfaces. This is a review experiment, not a new
-production design decision. Run `scripts/run-fixtures.sh --concept=porcelain`
-(or `milk-glass` / `opal`) and search `swift`; snapshots use
-`scripts/snapshot.sh --concept CONCEPT --query swift` with optional
-`--inspect`, `--actions`, `--appearance`, `--width`, and `--height`.
+The current fixture-only comparison retains Hybrid exactly: one search field,
+one ranked list, the existing inspection and action views, and the same
+keyboard behavior. The deterministic `swift` fixture supplies the same app,
+folder, and real repo file URLs in every render. Native result icons remain
+recognizable; the panel's own palette is white, black, and a small pink mark.
+
+Three alternatives draw one static shape in the unused upper-right edge strip,
+clear of text and controls: an irregular hide spot, a pair of ear curves, or a
+simple muzzle curve. The matching selected-row styles are a gray wash with
+black rail, a monochrome outline with a pink rail, and an inverted fill with a
+pink rail. Dark mode swaps black and white. There are no gradients, glow,
+glass effects, slogans, sidebars, numbered cards, or extra interface sections.
+The mark has no hit target or accessibility announcement; selection still has
+a geometric cue independent of pink.
+
+Run `scripts/run-fixtures.sh --cow=baseline|spot|ear|muzzle` and search
+`swift`. Snapshot with `scripts/snapshot.sh --cow STUDY --query swift
+--select LauncherView.swift --appearance light|dark`. A compact footer uses
+shorter labels below 520 pt so the controls stay on one line. The normal
+launcher continues to use unmodified Hybrid styling until a study is chosen.

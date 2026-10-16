@@ -64,9 +64,12 @@ quality follow-ups; they do not block the next product capability.
       behavior (core change, 2026-10-14).
 - [x] Render fixture-only Porcelain Index, Milk Glass Desk, and Opal Chamber
       identity studies through the shared `swift` search corpus, including
-      invocation, results, file inspection, and actions (2026-10-14).
-- [ ] Choose one material identity direction, then integrate and refine it in
-      the normal launcher without changing Rust ranking or discovery.
+      invocation, results, file inspection, and actions (2026-10-14); the user
+      rejected them and their view was removed on 2026-10-16.
+- [x] Render three minimal cow edge marks and selected-row styles on identical
+      Hybrid results in light and dark mode, plus a baseline comparison.
+- [ ] Choose a cow mark and selected-row style, then refine it for the normal
+      launcher without changing Rust ranking or discovery.
 - [ ] Dogfood physical mouse, VoiceOver, multi-display, Spaces, and full-screen
       behavior; record only concrete failures in ISSUES.md.
 - [ ] Populate battery context when a reliable native power-source signal is
@@ -362,3 +365,15 @@ idle, lock, and sleep observer paths.
   path; the existing SF Symbol remains the fallback when no icon is available.
 - No Rust changes or ABI changes were needed. All 23 Swift tests pass, including
   a bounded 64 × 64 settings-icon regression check.
+
+## QA evidence — 2026-10-16 — Minimal cow identity studies
+
+- The baseline and three fixture-only studies were rendered with the same
+  `swift` results and selected file in light and dark appearance at 640 × 554 pt.
+  All three were also checked at 440 × 460 pt; the existing footer hints now
+  fit on one line there. Inspection and actions were rendered with the study
+  treatment while retaining Hybrid's existing views.
+- Both Swift products build, and all 24 `MilkyNativeTests` pass. The marks have
+  no hit targets or accessibility announcements, and selection remains visible
+  through fill, outline, or rail shape. Live VoiceOver navigation remains a
+  focused manual check after a direction is chosen.

@@ -98,3 +98,14 @@ commands bypass this invalidation. Keep runtime ABI validation as a second check
 Validation: First fingerprint-miss build cleaned and rebuilt all products; probe
 reports ABI 2, real Swift bridge tests pass, unchanged fingerprint reuses products.
 Shared root cause remains recorded in `../ISSUES.md` (2026-09-13).
+
+## 2026-10-16 — Hybrid footer wrapped at narrow panel widths
+Status: resolved
+Area: layout
+Symptom: At 440 pt wide, the fixture label and shortcut hints wrapped into
+several lines, crowding the result viewport.
+Cause: The full-width footer displayed every hint with no compact state.
+Fix: Below 520 pt, shorten action labels and omit the navigation hint; keep
+accessible names and tooltips on the buttons. Full-size wording is unchanged.
+Lesson: Check a clamped panel width when adding footer actions, even if the
+result rows themselves truncate correctly.
